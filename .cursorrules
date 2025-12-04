@@ -1,0 +1,452 @@
+# The Black Berets - Simple Hacking Tool
+
+## Environment
+- **OS**: Alpine Linux on Chromebook
+- **Package Manager**: Nix + just
+- **Setup**: One command install
+- **Status**: Everything is installed by default after running `install.sh`
+
+## Installation & Cleanup
+
+**Installation (works by default):**
+```bash
+doas ./install.sh  # Installs Nix + just (idempotent, safe to rerun)
+```
+
+**Cleanup (works by default):**
+```bash
+doas ./cleanup.sh  # Removes UI/desktop components, cleans system, removes Nix/just
+```
+
+**Both scripts:**
+- Work by default with proper error handling
+- Are idempotent (safe to rerun)
+- Handle cleanup automatically via traps
+- Validate inputs and check prerequisites
+- Provide clear error messages
+
+## Core Tools
+
+### LocalAI + Llama 3 8B
+```bash
+just setup              # Install LocalAI + llama.cpp
+just download-llama3-8b # Download model
+just run                # Start AI server (port 8080)
+```
+
+### Kali Tools
+```bash
+just install-kali-tools  # Install security tools via Nix
+```
+
+### MCP Server (for AI assistants)
+```bash
+just install-mcp-server  # Install MCP bridge
+```
+
+## Hacking Commands
+
+**Network Scanning:**
+- `just analyze-nmap TARGET` - Scan + AI analysis
+- `just analyze-sqlmap URL` - SQL injection test + AI
+
+**WiFi:**
+- `doas just crack-wifi INTERFACE BSSID WORDLIST` - Crack WiFi
+
+**AI Assistance:**
+- `just pentest-ai TARGET` - AI-guided pentest
+- `just security-checklist TARGET` - Generate checklist
+- `just ask-security-tool TOOL QUESTION` - Tool help
+
+**Reports:**
+- `just security-report TYPE DATA` - Generate report
+
+## File Structure
+
+- `install.sh` - One-command setup (works by default, idempotent)
+- `cleanup.sh` - System cleanup script (works by default, removes UI/Nix/just)
+- `justfile` - All commands
+- `flake.nix` - Nix packages (Kali tools)
+- `mcp-kali-server.py` - MCP bridge for AI assistants
+
+## Installation State
+
+**After running `install.sh`, everything is installed:**
+- ✅ Nix package manager (configured and working)
+- ✅ just command runner (available globally)
+- ✅ Default justfile (at `/usr/local/share/theblackberets/justfile`)
+- ✅ Environment configured (profiles, aliases, wrappers)
+- ✅ LOCAL_AI wrapper command available
+
+**To clean everything:**
+- Run `doas ./cleanup.sh` to remove all installed components
+- Removes: Nix, just, UI packages, users, services, temp files
+- Safe to run multiple times (idempotent)
+
+## Usage Pattern
+
+```bash
+# 1. Install (everything installed by default after this)
+doas ./install.sh  # Installs Nix + just, configures environment
+
+# 2. Setup tools (optional - installs Kali tools and LocalAI)
+just install-kali-tools  # Install security tools
+just setup && just download-llama3-8b  # Setup LocalAI + model
+
+# 3. Start AI server
+just run  # Terminal 1
+
+# 4. Hack
+just analyze-nmap target.com  # Terminal 2
+just pentest-ai target.com
+
+# 5. Cleanup (when done)
+doas ./cleanup.sh  # Removes everything (Nix, just, UI components)
+```
+
+---
+
+## CRITICAL: Code Quality Standards
+
+### Robustness & Stability Requirements
+
+**MANDATORY: Every script MUST start with:**
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+```
+- `set -e`: Exit immediately on error
+- `set -u`: Treat unset variables as errors
+- `set -o pipefail`: Pipeline failures propagate
+
+**MANDATORY: Resource Management**
+- **Temp files**: ALWAYS use `trap` for cleanup
+  ```bash
+  TEMP_FILE=$(mktemp)
+  trap "rm -f $TEMP_FILE" EXIT
+  ```
+- **Background processes**: ALWAYS track PIDs and cleanup
+  ```bash
+  PROCESS_PID=$!
+  trap "kill $PROCESS_PID 2>/dev/null || true" EXIT
+  ```
+- **Network resources**: ALWAYS check availability before use
+  ```bash
+  if ! curl -s http://localhost:$PORT/health >/dev/null 2>&1; then
+      echo "ERROR: Service not available"
+      exit 1
+  fi
+  ```
+
+**MANDATORY: Input Validation**
+- **Required parameters**: Check immediately, fail fast
+  ```bash
+  if [ -z "$TARGET" ]; then
+      echo "ERROR: Target is required"
+      exit 1
+  fi
+  ```
+- **Ports**: Validate range (1-65535)
+  ```bash
+  if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+      echo "ERROR: Invalid port number: $PORT"
+      exit 1
+  fi
+  ```
+- **Files**: Check existence before operations
+  ```bash
+  if [ ! -f "$FILE" ]; then
+      echo "ERROR: File not found: $FILE"
+      exit 1
+  fi
+  ```
+- **URLs**: Validate format before network operations
+  ```bash
+  if [[ ! "$URL" =~ ^https?:// ]]; then
+      echo "ERROR: Invalid URL format: $URL"
+      exit 1
+  fi
+  ```
+
+**MANDATORY: Tool Availability Checks**
+- Check BEFORE attempting to use
+- Provide clear installation instructions
+- Fail gracefully with helpful error messages
+  ```bash
+  if ! command -v tool >/dev/null 2>&1; then
+      echo "ERROR: tool not found. Install with: just install-tool"
+      exit 1
+  fi
+  ```
+
+**MANDATORY: Timeout Protection**
+- Set appropriate timeouts for all long-running operations
+- Default: 300s (5 minutes) for normal operations
+- Extended: 3600s (1 hour) for cracking/brute-force operations
+- Python: Use `timeout` parameter in `subprocess.run()`
+- Bash: Use `timeout` command wrapper if available
+
+**MANDATORY: Error Handling**
+- Use explicit error codes (exit 1 for errors, 0 for success)
+- Provide actionable error messages
+- Log errors to stderr: `echo "ERROR: message" >&2`
+- Never silently fail - always report what went wrong
+
+**MANDATORY: Idempotent Operations**
+- All commands MUST be safe to rerun
+- Check state before modifying
+- Skip if already done
+- Handle partial installations gracefully
+
+### Performance Guidelines
+
+**Efficient Operations:**
+- Use `command -v` instead of `which` (POSIX compliant, faster)
+- Redirect output to `/dev/null` when not needed: `command >/dev/null 2>&1`
+- Use `|| true` for optional operations that may fail
+- Batch operations when possible (e.g., install multiple packages together)
+
+**Resource Cleanup:**
+- Clean up temp files immediately after use
+- Stop background processes when done
+- Release network interfaces properly
+- Remove temporary directories
+
+**Network Operations:**
+- Check service availability before making requests
+- Use appropriate timeouts for network calls
+- Handle connection failures gracefully
+- Provide fallback mechanisms when possible
+
+### Code Clarity Standards
+
+**Consistent Structure:**
+1. Shebang and strict mode (`set -euo pipefail`)
+2. Variable declarations
+3. Input validation
+4. Tool availability checks
+5. Resource setup (temp files, traps)
+6. Main logic
+7. Cleanup (handled by traps)
+
+**Naming Conventions:**
+- Use UPPERCASE for environment variables and constants
+- Use lowercase for local variables
+- Use descriptive names: `SCAN_OUTPUT` not `tmp`
+- Prefix error messages with "ERROR:", warnings with "WARNING:"
+
+**Error Messages:**
+- Be specific: "nmap not found" not "command failed"
+- Provide solutions: "Install with: just install-kali-tools"
+- Use consistent format: "ERROR: [what] [why] [how to fix]"
+
+**Comments:**
+- Explain WHY, not WHAT
+- Document non-obvious behavior
+- Note workarounds and limitations
+- Mark TODO items clearly
+
+---
+
+## Common Pitfalls & Solutions
+
+### Bash Scripting Anti-Patterns
+
+**❌ WRONG: Glob patterns in test commands**
+```bash
+if [ ! -f "dir"/*.ext ]; then  # This doesn't work!
+```
+**✅ CORRECT:**
+```bash
+if ! ls "dir"/*.ext >/dev/null 2>&1; then
+```
+
+**❌ WRONG: Newline escapes in double quotes**
+```bash
+PROMPT="Line 1\nLine 2"  # \n won't expand
+```
+**✅ CORRECT:**
+```bash
+PROMPT=$'Line 1\nLine 2'  # Use $'...' syntax
+# OR
+PROMPT="Line 1
+Line 2"  # Actual newlines
+```
+
+**❌ WRONG: Undefined variables**
+```bash
+nix profile install "$FLAKE_PATH"  # Variable doesn't exist
+```
+**✅ CORRECT:**
+```bash
+# Ensure variable is set before use
+FLAKE_REF="${FLAKE_REF:-nixpkgs#just}"
+nix profile install "$FLAKE_REF"
+```
+
+**❌ WRONG: Missing branch in GitHub URLs**
+```bash
+wget "https://raw.githubusercontent.com/user/repo/file.sh"
+```
+**✅ CORRECT:**
+```bash
+wget "https://raw.githubusercontent.com/user/repo/main/file.sh"
+```
+
+**❌ WRONG: No cleanup for temp files**
+```bash
+TEMP_FILE=$(mktemp)
+# ... use file ...
+# File left behind if script fails!
+```
+**✅ CORRECT:**
+```bash
+TEMP_FILE=$(mktemp)
+trap "rm -f $TEMP_FILE" EXIT
+# ... use file ...
+# Automatically cleaned up on exit
+```
+
+### Python Subprocess Anti-Patterns
+
+**❌ WRONG: Stderr handling when redirected**
+```python
+result = subprocess.run(cmd, stderr=subprocess.STDOUT, ...)
+error = result.stderr  # This will be empty!
+```
+**✅ CORRECT:**
+```python
+result = subprocess.run(cmd, stderr=subprocess.STDOUT, ...)
+# When stderr is redirected to stdout, use stdout for both
+output = result.stdout
+error = result.stdout if not result.success else ""
+```
+
+**❌ WRONG: No timeout**
+```python
+result = subprocess.run(cmd)  # Can hang forever!
+```
+**✅ CORRECT:**
+```python
+result = subprocess.run(cmd, timeout=300)  # 5 min default
+# Or longer for specific operations:
+result = subprocess.run(cmd, timeout=3600)  # 1 hour for cracking
+```
+
+**❌ WRONG: Input handling**
+```python
+result = subprocess.run(cmd, stdin=text.encode(), text=True)  # Wrong!
+```
+**✅ CORRECT:**
+```python
+result = subprocess.run(cmd, input=text, text=True)  # Use input parameter
+```
+
+### Pattern Matching Anti-Patterns
+
+**❌ WRONG: Fragile password extraction**
+```bash
+PASSWORD=$(grep "KEY FOUND" output | awk -F'[' '{print $2}' | awk -F']' '{print $1}')
+```
+**✅ CORRECT:**
+```bash
+# More robust pattern matching
+PASSWORD=$(grep -i "KEY FOUND" output | sed -n 's/.*\[\(.*\)\].*/\1/p' | tr -d ' ' | head -n1)
+```
+
+**❌ WRONG: No fallback for hash identification**
+```python
+if not hashid_available:
+    return {"error": "Tool not available"}
+```
+**✅ CORRECT:**
+```python
+if hashid_available:
+    return use_hashid(hash)
+else:
+    # Fallback to pattern matching
+    return identify_by_pattern(hash)  # Length, prefix, etc.
+```
+
+---
+
+## MCP Server Patterns
+
+### Tool Handler Structure
+
+Every tool handler MUST follow this structure:
+
+```python
+def handle_tool_name(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Clear docstring describing what the tool does"""
+    
+    # 1. Check tool availability FIRST
+    if not self._check_tool_available("tool-name"):
+        return {"error": "tool-name not found. Install with: just install-tool"}
+    
+    # 2. Validate required parameters
+    required_param = params.get("required_param")
+    if not required_param:
+        return {"error": "required_param is required"}
+    
+    # 3. Validate file existence if needed
+    if "file_path" in params:
+        if not os.path.exists(params["file_path"]):
+            return {"error": f"File not found: {params['file_path']}"}
+    
+    # 4. Execute with appropriate timeout
+    result = self._execute_command(
+        ["tool-name", "args"],
+        timeout=300  # Or 3600 for cracking operations
+    )
+    
+    # 5. Return structured response
+    return {
+        "tool": "tool-name",
+        "output": result["stdout"],
+        "error": result["stderr"] if not result["success"] else None,
+        "success": result["success"]
+    }
+```
+
+### Command Execution Best Practices
+
+- **Always validate** command exists before running
+- **Set timeouts** appropriate to operation type
+- **Combine stderr/stdout** for better error visibility
+- **Return structured data** with success status
+- **Handle exceptions** gracefully with clear error messages
+
+---
+
+## Testing Checklist
+
+Before committing any code, verify:
+
+- [ ] Script starts with `set -euo pipefail`
+- [ ] All temp files have `trap` cleanup
+- [ ] All inputs are validated (ports, files, URLs, parameters)
+- [ ] Tool availability checked before use
+- [ ] Appropriate timeouts set for long operations
+- [ ] Error messages are clear and actionable
+- [ ] Exit codes are correct (0=success, 1=error)
+- [ ] Command is idempotent (safe to rerun)
+- [ ] Resource cleanup happens on failure
+- [ ] Network operations check availability first
+- [ ] Background processes are tracked and cleaned up
+- [ ] No hardcoded paths (use variables)
+- [ ] No silent failures (always report errors)
+
+---
+
+## Notes
+
+- **Minimal codebase**: Everything in `justfile` and scripts
+- **Idempotent**: All commands safe to rerun
+- **Robust**: Comprehensive error handling and validation
+- **AI-powered**: LocalAI analyzes tool outputs
+- **MCP enabled**: AI assistants can execute tools directly
+- **Legal**: Only test systems you own/have permission
+- **Ecosystem Fixed**: Both `install.sh` and `cleanup.sh` work by default with no configuration needed
+- **Complete Cleanup**: `cleanup.sh` removes all components installed by `install.sh` (Nix, just, aliases, wrappers, profiles)
+- **No Local Debugging**: Cannot debug locally - all development and testing must be done remotely or in production environment
