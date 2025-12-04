@@ -1,0 +1,505 @@
+# just/justdo Command Runner Feature
+# Installation and environment setup
+
+# Install just command runner
+install-just:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Check if already installed
+    if is_installed just; then
+        log_info "just already installed, skipping"
+        exit 0
+    fi
+    
+    log_info "Installing just command runner..."
+    
+    require_command apk "apk add apk-tools"
+    
+    # Enable community repository if needed
+    if ! grep -q "^[^#].*community" /etc/apk/repositories 2>/dev/null; then
+        ALPINE_VERSION=$(cat /etc/alpine-release 2>/dev/null | cut -d. -f1,2 || echo "edge")
+        if [ "$ALPINE_VERSION" != "edge" ]; then
+            echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" >> /etc/apk/repositories
+        else
+            echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+        fi
+        apk update >/dev/null 2>&1 || true
+    fi
+    
+    # Install just
+    if apk add --no-cache just >/dev/null 2>&1; then
+        log_success "just installed successfully"
+    else
+        die "Failed to install just"
+    fi
+
+# Setup environment (profiles, aliases, wrappers)
+setup-environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Setting up environment..."
+    
+    require_command just "just install-just"
+    
+    # Create directory for default justfile and lib
+    DEFAULT_JUSTFILE_DIR="/usr/local/share/theblackberets"
+    mkdir -p "$DEFAULT_JUSTFILE_DIR"
+    DEFAULT_JUSTFILE="$DEFAULT_JUSTFILE_DIR/justfile"
+    
+    # Find project root (where main justfile is)
+    PROJECT_ROOT=""
+    for path in ".." "../.." "$(pwd)" "$(dirname "$(pwd)")"; do
+        if [ -f "$path/justfile" ] && [ -d "$path/lib" ]; then
+            PROJECT_ROOT="$path"
+            break
+        fi
+    done
+    
+    # If not found, try current directory
+    if [ -z "$PROJECT_ROOT" ] && [ -f "justfile" ] && [ -d "lib" ]; then
+        PROJECT_ROOT="."
+    fi
+    
+    if [ -z "$PROJECT_ROOT" ]; then
+        log_warn "Project root not found, skipping file copy"
+    else
+        log_info "Found project root: $PROJECT_ROOT"
+        
+        # Copy main justfile
+        if [ -f "$PROJECT_ROOT/justfile" ]; then
+            cp "$PROJECT_ROOT/justfile" "$DEFAULT_JUSTFILE" 2>/dev/null || true
+            chmod 644 "$DEFAULT_JUSTFILE"
+            log_success "Default justfile installed"
+        fi
+        
+        # Copy lib directory
+        if [ -d "$PROJECT_ROOT/lib" ]; then
+            mkdir -p "$DEFAULT_JUSTFILE_DIR/lib"
+            cp -r "$PROJECT_ROOT/lib"/* "$DEFAULT_JUSTFILE_DIR/lib/" 2>/dev/null || true
+            chmod +x "$DEFAULT_JUSTFILE_DIR/lib"/*.sh 2>/dev/null || true
+            log_success "Library files installed"
+        fi
+        
+        # Copy all feature directories (required for imports)
+        for feature in nix just kali localai mcp models-management services test; do
+            if [ -d "$PROJECT_ROOT/$feature" ]; then
+                mkdir -p "$DEFAULT_JUSTFILE_DIR/$feature"
+                cp -r "$PROJECT_ROOT/$feature"/* "$DEFAULT_JUSTFILE_DIR/$feature/" 2>/dev/null || true
+                chmod +x "$DEFAULT_JUSTFILE_DIR/$feature"/*.sh 2>/dev/null || true
+                log_info "  ✓ $feature/"
+            fi
+        done
+        
+        # Copy config directory
+        if [ -d "$PROJECT_ROOT/config" ]; then
+            mkdir -p "$DEFAULT_JUSTFILE_DIR/config"
+            cp -r "$PROJECT_ROOT/config"/* "$DEFAULT_JUSTFILE_DIR/config/" 2>/dev/null || true
+            log_info "  ✓ config/"
+        fi
+        
+        log_success "All feature directories installed"
+    fi
+    
+    # Copy chat.py if it exists locally (use PROJECT_ROOT if found)
+    CHAT_SCRIPT=""
+    if [ -n "$PROJECT_ROOT" ]; then
+        for path in "$PROJECT_ROOT/localai/chat.py" "$PROJECT_ROOT/chat.py"; do
+            if [ -f "$path" ]; then
+                CHAT_SCRIPT="$path"
+                break
+            fi
+        done
+    else
+        for path in "../localai/chat.py" "../chat.py" "$(pwd)/../localai/chat.py"; do
+            if [ -f "$path" ]; then
+                CHAT_SCRIPT="$path"
+                break
+            fi
+        done
+    fi
+    
+    if [ -n "$CHAT_SCRIPT" ] && [ -f "$CHAT_SCRIPT" ]; then
+        cp "$CHAT_SCRIPT" "$DEFAULT_JUSTFILE_DIR/chat.py" 2>/dev/null || true
+        chmod +x "$DEFAULT_JUSTFILE_DIR/chat.py" 2>/dev/null || true
+        
+        # Also copy to localai directory for consistency
+        mkdir -p "$DEFAULT_JUSTFILE_DIR/localai"
+        cp "$CHAT_SCRIPT" "$DEFAULT_JUSTFILE_DIR/localai/chat.py" 2>/dev/null || true
+        chmod +x "$DEFAULT_JUSTFILE_DIR/localai/chat.py" 2>/dev/null || true
+        
+        # Create symlink in /usr/local/bin
+        mkdir -p /usr/local/bin
+        ln -sf "$DEFAULT_JUSTFILE_DIR/chat.py" /usr/local/bin/chat.py 2>/dev/null || true
+        log_success "chat.py installed"
+    fi
+    
+    # Find real just binary
+    REAL_JUST_PATH=$(command -v just || echo "")
+    [ -z "$REAL_JUST_PATH" ] && die "just command not found"
+    
+    # Ensure /usr/local/bin exists and is in PATH
+    mkdir -p /usr/local/bin
+    if [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
+        export PATH="/usr/local/bin:$PATH"
+    fi
+    
+    # Create justdo wrapper script
+    JUSTDO_SCRIPT="/usr/local/bin/justdo"
+    DEFAULT_JUSTFILE_DIR_VAR="$(dirname "$DEFAULT_JUSTFILE")"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        echo '# The Black Berets - justdo command'
+        echo '# Always uses default justfile, bypasses local justfile check'
+        echo ''
+        echo "_REAL_JUST_PATH=\"$REAL_JUST_PATH\""
+        echo "_DEFAULT_JUSTFILE=\"$DEFAULT_JUSTFILE\""
+        echo "_DEFAULT_JUSTFILE_DIR=\"$DEFAULT_JUSTFILE_DIR_VAR\""
+        echo ''
+        echo '# Execute just with default justfile'
+        echo 'exec "$_REAL_JUST_PATH" --justfile "$_DEFAULT_JUSTFILE" --working-directory "$_DEFAULT_JUSTFILE_DIR" "$@"'
+    } > "$JUSTDO_SCRIPT"
+    chmod +x "$JUSTDO_SCRIPT"
+    
+    # Verify justdo is accessible
+    if command -v justdo >/dev/null 2>&1; then
+        log_success "justdo command created and available globally"
+    else
+        log_warn "justdo script created but not in PATH (may need shell restart)"
+        log_info "Script location: $JUSTDO_SCRIPT"
+        log_info "Add to PATH: export PATH=\"/usr/local/bin:\$PATH\""
+    fi
+    
+    # Create bashrc configuration
+    BASHRC_CONFIG="/etc/profile.d/theblackberets-bashrc.sh"
+    {
+        echo '# The Black Berets - Comprehensive bashrc configuration'
+        echo '# This file is sourced by /etc/profile.d/ scripts and ensures all tools work in bash'
+        echo ''
+        echo '# Source all profile.d scripts (ensures Nix, just aliases, etc. are available)'
+        echo 'if [ -d /etc/profile.d ]; then'
+        echo '    for script in /etc/profile.d/*.sh; do'
+        echo '        if [ -r "$script" ] && [ -f "$script" ]; then'
+        echo '            # Skip sourcing this file itself to avoid recursion'
+        echo '            if [ "$script" != "/etc/profile.d/theblackberets-bashrc.sh" ]; then'
+        echo '                . "$script" 2>/dev/null || true'
+        echo '            fi'
+        echo '        fi'
+        echo '    done'
+        echo 'fi'
+        echo ''
+        echo '# Source Nix profile if available (multiple possible locations)'
+        echo 'if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then'
+        echo '    . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true'
+        echo 'elif [ -f /etc/profile.d/nix.sh ]; then'
+        echo '    . /etc/profile.d/nix.sh 2>/dev/null || true'
+        echo 'elif [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then'
+        echo '    . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true'
+        echo 'fi'
+        echo ''
+        echo '# Ensure just command is available'
+        echo 'if ! command -v just >/dev/null 2>&1; then'
+        echo '    # Try common locations'
+        echo '    for just_path in /usr/bin/just /usr/local/bin/just /nix/store/*/bin/just; do'
+        echo '        if [ -x "$just_path" ] 2>/dev/null; then'
+        echo '            export PATH="$PATH:$(dirname "$just_path")"'
+        echo '            break'
+        echo '        fi'
+        echo '    done'
+        echo 'fi'
+        echo ''
+        echo '# Set default LOCAL_AI environment variables (if not already set)'
+        echo 'export LOCAL_AI="${LOCAL_AI:-http://localhost:8080}"'
+        echo 'export LOCALAI_PORT="${LOCALAI_PORT:-8080}"'
+        echo 'export LOCALAI_MODEL_DIR="${LOCALAI_MODEL_DIR:-./models}"'
+        echo 'export LOCALAI_CONFIG_DIR="${LOCALAI_CONFIG_DIR:-./localai-config}"'
+        echo ''
+        echo '# Add /usr/local/bin to PATH if not already present'
+        echo 'if [ -d /usr/local/bin ] && [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then'
+        echo '    export PATH="/usr/local/bin:$PATH"'
+        echo 'fi'
+        echo ''
+        echo '# Auto-start MCP server in background (if enabled and not already running)'
+        echo 'MCP_SCRIPT_PATH="/usr/local/share/theblackberets/mcp-kali-server.py"'
+        echo 'if [ -f "$MCP_SCRIPT_PATH" ] && command -v python3 >/dev/null 2>&1; then'
+        echo '    # Only start if not already running (avoid multiple instances)'
+        echo '    if ! pgrep -f "mcp-kali-server.py" >/dev/null 2>&1; then'
+        echo '        # Start in background, redirect output to /dev/null'
+        echo '        nohup python3 "$MCP_SCRIPT_PATH" >/dev/null 2>&1 &'
+        echo '    fi'
+        echo 'fi'
+    } > "$BASHRC_CONFIG"
+    chmod +x "$BASHRC_CONFIG"
+    log_success "bashrc configuration created"
+    
+    # Ensure /etc/skel/.bashrc exists and sources profile.d scripts (for new users)
+    SKEL_BASHRC="/etc/skel/.bashrc"
+    mkdir -p /etc/skel
+    if [ ! -f "$SKEL_BASHRC" ]; then
+        log_info "Creating default .bashrc template for new users..."
+        {
+            echo '# ~/.bashrc: executed by bash(1) for non-login shells.'
+            echo ''
+            echo '# Source system-wide bashrc configuration'
+            echo 'if [ -f /etc/profile.d/theblackberets-bashrc.sh ]; then'
+            echo '    . /etc/profile.d/theblackberets-bashrc.sh'
+            echo 'fi'
+            echo ''
+            echo '# Source all profile.d scripts'
+            echo 'if [ -d /etc/profile.d ]; then'
+            echo '    for script in /etc/profile.d/*.sh; do'
+            echo '        if [ -r "$script" ] && [ -f "$script" ]; then'
+            echo '            . "$script" 2>/dev/null || true'
+            echo '        fi'
+            echo '    done'
+            echo 'fi'
+            echo ''
+            echo '# If not running interactively, don'\''t do anything else'
+            echo 'case $- in'
+            echo '    *i*) ;;'
+            echo '      *) return;;'
+            echo 'esac'
+            echo ''
+            echo '# History settings'
+            echo 'HISTCONTROL=ignoreboth'
+            echo 'HISTSIZE=1000'
+            echo 'HISTFILESIZE=2000'
+            echo ''
+            echo '# Append to history file, don'\''t overwrite'
+            echo 'shopt -s histappend'
+            echo ''
+            echo '# Check window size after each command'
+            echo 'shopt -s checkwinsize'
+            echo ''
+            echo '# Enable programmable completion'
+            echo 'if [ -f /etc/bash_completion ] && ! shopt -oq posix; then'
+            echo '    . /etc/bash_completion'
+            echo 'fi'
+        } > "$SKEL_BASHRC"
+        chmod 644 "$SKEL_BASHRC"
+        log_success "Created default .bashrc template"
+    else
+        # Update existing /etc/skel/.bashrc to include our configuration
+        if ! grep -q "theblackberets-bashrc.sh" "$SKEL_BASHRC" 2>/dev/null; then
+            log_info "Updating existing .bashrc template..."
+            {
+                echo ''
+                echo '# The Black Berets - Source system-wide bashrc configuration'
+                echo 'if [ -f /etc/profile.d/theblackberets-bashrc.sh ]; then'
+                echo '    . /etc/profile.d/theblackberets-bashrc.sh'
+                echo 'fi'
+            } >> "$SKEL_BASHRC"
+            log_success "Updated .bashrc template"
+        fi
+    fi
+    
+    # Update root's .bashrc if it exists
+    ROOT_BASHRC="/root/.bashrc"
+    if [ -f "$ROOT_BASHRC" ]; then
+        if ! grep -q "theblackberets-bashrc.sh" "$ROOT_BASHRC" 2>/dev/null; then
+            log_info "Updating root'\''s .bashrc..."
+            {
+                echo ''
+                echo '# The Black Berets - Source system-wide bashrc configuration'
+                echo 'if [ -f /etc/profile.d/theblackberets-bashrc.sh ]; then'
+                echo '    . /etc/profile.d/theblackberets-bashrc.sh'
+                echo 'fi'
+            } >> "$ROOT_BASHRC"
+            log_success "Updated root'\''s .bashrc"
+        fi
+    else
+        # Create root's .bashrc if it doesn't exist
+        log_info "Creating root'\''s .bashrc..."
+        cp "$SKEL_BASHRC" "$ROOT_BASHRC" 2>/dev/null || {
+            {
+                echo '# ~/.bashrc: executed by bash(1) for non-login shells.'
+                echo ''
+                echo '# Source system-wide bashrc configuration'
+                echo 'if [ -f /etc/profile.d/theblackberets-bashrc.sh ]; then'
+                echo '    . /etc/profile.d/theblackberets-bashrc.sh'
+                echo 'fi'
+                echo ''
+                echo '# Source all profile.d scripts'
+                echo 'if [ -d /etc/profile.d ]; then'
+                echo '    for script in /etc/profile.d/*.sh; do'
+                echo '        if [ -r "$script" ] && [ -f "$script" ]; then'
+                echo '            . "$script" 2>/dev/null || true'
+                echo '        fi'
+                echo '    done'
+                echo 'fi'
+                echo ''
+                echo '# If not running interactively, don'\''t do anything else'
+                echo 'case $- in'
+                echo '    *i*) ;;'
+                echo '      *) return;;'
+                echo 'esac'
+                echo ''
+                echo '# History settings'
+                echo 'HISTCONTROL=ignoreboth'
+                echo 'HISTSIZE=1000'
+                echo 'HISTFILESIZE=2000'
+                echo ''
+                echo '# Append to history file, don'\''t overwrite'
+                echo 'shopt -s histappend'
+                echo ''
+                echo '# Check window size after each command'
+                echo 'shopt -s checkwinsize'
+                echo ''
+                echo '# Enable programmable completion'
+                echo 'if [ -f /etc/bash_completion ] && ! shopt -oq posix; then'
+                echo '    . /etc/bash_completion'
+                echo 'fi'
+            } > "$ROOT_BASHRC"
+        }
+        chmod 644 "$ROOT_BASHRC"
+        log_success "Created root'\''s .bashrc"
+    fi
+    
+    # Install bash completion for justdo
+    log_info "Installing bash completion for justdo..."
+    COMPLETION_SOURCE=""
+    for path in "../justdo-completion.bash" "./justdo-completion.bash" "/usr/local/share/theblackberets/justdo-completion.bash"; do
+        [ -f "$path" ] && COMPLETION_SOURCE="$path" && break
+    done
+    
+    if [ -n "$COMPLETION_SOURCE" ] && [ -f "$COMPLETION_SOURCE" ]; then
+        mkdir -p /etc/bash_completion.d
+        cp "$COMPLETION_SOURCE" /etc/bash_completion.d/justdo
+        chmod 644 /etc/bash_completion.d/justdo
+        
+        # Source it in bash_completion if bash_completion exists
+        if [ -f /etc/bash_completion ]; then
+            if ! grep -q "justdo" /etc/bash_completion 2>/dev/null; then
+                {
+                    echo ''
+                    echo '# The Black Berets - justdo completion'
+                    echo 'if [ -f /etc/bash_completion.d/justdo ]; then'
+                    echo '    . /etc/bash_completion.d/justdo'
+                    echo 'fi'
+                } >> /etc/bash_completion
+            fi
+        fi
+        log_success "Bash completion for justdo installed"
+    else
+        log_warn "justdo-completion.bash not found, skipping..."
+    fi
+    
+    # Source the bashrc config in current shell if possible
+    if [ -f "$BASHRC_CONFIG" ]; then
+        . "$BASHRC_CONFIG" 2>/dev/null || true
+    fi
+
+# Test just/justdo (feature-specific)
+test-just:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Test just installation
+    if is_installed just; then
+        log_success "just: Installed"
+    else
+        log_fail "just: Not installed"
+        exit 1
+    fi
+    
+    # Test justdo availability
+    if is_installed justdo; then
+        log_success "justdo: Available"
+    else
+        log_warn "justdo: Not found (may need shell restart)"
+    fi
+    
+    log_success "just/justdo tests passed"
+
+# Cleanup just/justdo (feature-specific)
+cleanup-just:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Cleaning up just/justdo..."
+    
+    # Remove justdo wrapper
+    rm -f /usr/local/bin/justdo 2>/dev/null || true
+    
+    # Remove just binary symlink if exists
+    rm -f /usr/local/bin/just 2>/dev/null || true
+    
+    # Remove via apk
+    if command -v apk >/dev/null 2>&1; then
+        apk del just >/dev/null 2>&1 || true
+    fi
+    
+    # Remove bash completion
+    rm -f /etc/bash_completion.d/justdo 2>/dev/null || true
+    if [ -f /etc/bash_completion ]; then
+        sed -i '/# The Black Berets - justdo completion/,/^fi$/d' /etc/bash_completion 2>/dev/null || true
+    fi
+    
+    log_success "just/justdo cleanup completed"
+

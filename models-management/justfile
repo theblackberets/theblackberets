@@ -1,0 +1,87 @@
+# Model Management Feature
+# AI model download and management
+
+# Download model
+download-model MODEL_DIR="./models":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Downloading model..."
+    
+    # Respect MODEL_DIR environment variable if set and parameter is default
+    # In Docker/testing, MODEL_DIR env var may be set to absolute path
+    # Check if we're using default and an absolute MODEL_DIR path exists in environment
+    if [ "$MODEL_DIR" = "./models" ]; then
+        # Try to get MODEL_DIR from environment (using eval to check before parameter shadowing)
+        # Check common Docker/testing paths
+        if [ -d "/root/models" ] && [ -w "/root/models" ]; then
+            MODEL_DIR="/root/models"
+            log_info "Using Docker model directory: $MODEL_DIR"
+        fi
+    fi
+    
+    MODEL_URL=$(get_config "ai.localAI.downloadModel.modelUrl" "https://huggingface.co/QuantFactory/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf")
+    MODEL_FILE=$(get_config "ai.localAI.downloadModel.modelName" "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf")
+    
+    validate_url "$MODEL_URL"
+    
+    mkdir -p "$MODEL_DIR"
+    MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
+    
+    # Check if already downloaded
+    if [ -f "$MODEL_PATH" ]; then
+        log_info "Model already downloaded: $MODEL_PATH"
+        exit 0
+    fi
+    
+    # Download with retry and better error handling
+    DOWNLOAD_SUCCESS="false"
+    MAX_RETRIES=3
+    
+    for attempt in $(seq 1 $MAX_RETRIES); do
+        if [ $attempt -gt 1 ]; then
+            log_info "Retry attempt $attempt/$MAX_RETRIES..."
+            sleep 2
+        fi
+        
+        if command -v wget >/dev/null 2>&1; then
+            if wget --show-progress --no-check-certificate "$MODEL_URL" -O "$MODEL_PATH" 2>&1; then
+                DOWNLOAD_SUCCESS="true"
+                break
+            fi
+        elif command -v curl >/dev/null 2>&1; then
+            if curl -L --progress-bar --insecure "$MODEL_URL" -o "$MODEL_PATH" 2>&1; then
+                DOWNLOAD_SUCCESS="true"
+                break
+            fi
+        else
+            die "wget or curl required"
+        fi
+    done
+    
+    if [ "$DOWNLOAD_SUCCESS" != "true" ]; then
+        log_error "Model download failed after $MAX_RETRIES attempts"
+        log_info "HuggingFace may require authentication for large files"
+        log_info "Alternative: Download manually and place in: $MODEL_PATH"
+        log_info "Or use: huggingface-cli download QuantFactory/Meta-Llama-3-8B-Instruct-GGUF Meta-Llama-3-8B-Instruct.Q4_K_M.gguf --local-dir $MODEL_DIR"
+        die "Model download failed"
+    fi
+    
+    log_success "Model downloaded: $MODEL_PATH"
+

@@ -1,0 +1,70 @@
+# Dockerfile for Production Testing
+# Simulates real user installation: downloads install.sh from site and runs it
+# This tests the production installation flow without local files
+# Updated for feature-based structure
+
+FROM alpine:latest
+
+# Set strict error handling
+RUN set -euo pipefail || true
+
+# Install basic dependencies needed for installation
+RUN apk update && \
+    apk add --no-cache \
+    bash \
+    curl \
+    wget \
+    ca-certificates \
+    && rm -rf /var/cache/apk/*
+
+# Set working directory
+WORKDIR /root
+
+# Download install.sh from the site
+# Using raw.githubusercontent.com for direct file access
+RUN echo "Downloading install.sh from production site..." && \
+    if command -v wget >/dev/null 2>&1; then \
+        wget -qO install.sh "https://theblackberets.github.io/install.sh" || \
+        { echo "ERROR: Failed to download install.sh" >&2; exit 1; }; \
+    elif command -v curl >/dev/null 2>&1; then \
+        curl -fsSL "https://theblackberets.github.io/install.sh" -o install.sh || \
+        { echo "ERROR: Failed to download install.sh" >&2; exit 1; }; \
+    else \
+        echo "ERROR: wget or curl required" >&2; \
+        exit 1; \
+    fi && \
+    chmod +x install.sh && \
+    echo "Downloaded install.sh successfully"
+
+# Run install.sh as root (simulating real user installation)
+# This will download justfile and run just install
+RUN echo "Running install.sh..." && \
+    ./install.sh || { \
+        echo "ERROR: Installation failed" >&2; \
+        echo "Installation logs:" >&2; \
+        cat /var/log/*.log 2>/dev/null || true; \
+        exit 1; \
+    }
+
+# Set up bash profile for testing
+RUN cat >> /root/.bashrc << 'EOF'
+# Source Nix environment if available
+for profile in \
+    /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh \
+    /root/.nix-profile/etc/profile.d/nix.sh \
+    /etc/profile.d/nix.sh; do
+    if [ -f "$profile" ]; then
+        . "$profile" 2>/dev/null || true
+        break
+    fi
+done
+
+# Set up common environment variables (defaults from configuration.nix)
+# These match ai.localAI.modelDir="./models", ai.localAI.configDir="./localai-config", ai.localAI.defaultPort=8080
+export MODEL_DIR="${MODEL_DIR:-./models}"
+export CONFIG_DIR="${CONFIG_DIR:-./localai-config}"
+export PORT="${PORT:-8080}"
+EOF
+
+# Default to bash shell
+CMD ["/bin/bash", "--login"]

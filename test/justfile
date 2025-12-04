@@ -1,0 +1,278 @@
+# Testing Feature
+# Comprehensive environment testing
+
+# Comprehensive environment test (feature-specific)
+test-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    TESTS_PASSED=0
+    TESTS_FAILED=0
+    TESTS_WARNINGS=0
+    
+    test_pass() {
+        log_success "$1"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    }
+    
+    test_fail() {
+        log_fail "$1"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    }
+    
+    test_warn() {
+        log_warning "$1"
+        TESTS_WARNINGS=$((TESTS_WARNINGS + 1))
+    }
+    
+    test_info() {
+        log_info "$1"
+    }
+    
+    log_info "=========================================="
+    log_info "The Black Berets - Environment Test"
+    log_info "=========================================="
+    log_info ""
+    
+    # Test 1: Core Tools
+    log_info "## Core Tools"
+    if is_installed nix; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 3 nix --version >/dev/null 2>&1 && test_pass "Nix installed" || test_fail "Nix not working"
+        else
+            test_pass "Nix installed"
+        fi
+    else
+        test_fail "Nix not installed"
+    fi
+    
+    is_installed just && test_pass "just installed" || test_fail "just not installed"
+    is_installed justdo && test_pass "justdo available" || test_warn "justdo not found (may need shell restart)"
+    
+    log_info ""
+    
+    # Test 2: Configuration
+    log_info "## Configuration"
+    CONFIG_FILE=""
+    for path in "../config/configuration.nix" "./configuration.nix" "/usr/local/share/theblackberets/configuration.nix"; do
+        [ -f "$path" ] && CONFIG_FILE="$path" && break
+    done
+    [ -n "$CONFIG_FILE" ] && test_pass "configuration.nix found" || test_warn "configuration.nix not found (using defaults)"
+    
+    log_info ""
+    
+    # Test 3: LocalAI
+    log_info "## LocalAI"
+    is_installed localai && test_pass "LocalAI installed" || test_fail "LocalAI not installed"
+    
+    MODEL_DIR=$(get_config "ai.localAI.modelDir" "./models")
+    CONFIG_DIR=$(get_config "ai.localAI.configDir" "./localai-config")
+    PORT=$(get_config "ai.localAI.defaultPort" "8080")
+    
+    # Config checks - warnings in test environments, not failures
+    if [ -d "$CONFIG_DIR" ]; then
+        test_pass "Config directory exists"
+    else
+        test_warn "Config directory missing (will be created on first start)"
+    fi
+    
+    if [ -f "$CONFIG_DIR/config.yaml" ]; then
+        test_pass "Config file exists"
+        
+        # Validate config.yaml structure
+        if grep -q "backend:" "$CONFIG_DIR/config.yaml" && grep -q "name:" "$CONFIG_DIR/config.yaml"; then
+            test_pass "Config file structure valid"
+            
+            # Check backend name matches configuration
+            EXPECTED_BACKEND=$(get_config "ai.localAI.config.backend" "llama")
+            CONFIG_BACKEND=$(grep -E "^[[:space:]]*backend:" "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | sed 's/.*backend:[[:space:]]*\([^[:space:]]*\).*/\1/' || echo "")
+            if [ -n "$CONFIG_BACKEND" ]; then
+                if [ "$CONFIG_BACKEND" = "$EXPECTED_BACKEND" ]; then
+                    test_pass "Backend configured correctly: $CONFIG_BACKEND"
+                else
+                    test_warn "Backend mismatch: config has '$CONFIG_BACKEND', expected '$EXPECTED_BACKEND'"
+                fi
+            fi
+            
+            # Check model name in config
+            CONFIG_MODEL_NAME=$(grep -E "^[[:space:]]*-[[:space:]]*name:" "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | sed 's/.*name:[[:space:]]*\([^[:space:]]*\).*/\1/' || echo "")
+            EXPECTED_MODEL_NAME=$(get_config "ai.localAI.config.modelName" "llama-3-8b")
+            if [ -n "$CONFIG_MODEL_NAME" ]; then
+                if [ "$CONFIG_MODEL_NAME" = "$EXPECTED_MODEL_NAME" ]; then
+                    test_pass "Model name configured correctly: $CONFIG_MODEL_NAME"
+                else
+                    test_warn "Model name mismatch: config has '$CONFIG_MODEL_NAME', expected '$EXPECTED_MODEL_NAME'"
+                fi
+            fi
+        else
+            test_warn "Config file structure incomplete (missing backend or name)"
+        fi
+    else
+        test_warn "Config file missing (will be created on first start)"
+    fi
+    
+    MODEL_FILE=""
+    EXPECTED_MODEL_FILE=$(get_config "ai.localAI.config.modelFile" "")
+    if [ -z "$EXPECTED_MODEL_FILE" ]; then
+        EXPECTED_MODEL_FILE=$(get_config "ai.localAI.downloadModel.modelName" "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf")
+    fi
+    
+    # Search for model file
+    for name in "$EXPECTED_MODEL_FILE" "llama-3-8b-instruct-q4_k_m.gguf" "llama-3-8b-instruct.gguf" "llama-3-8b.gguf" "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"; do
+        [ -f "$MODEL_DIR/$name" ] && MODEL_FILE="$MODEL_DIR/$name" && break
+    done
+    
+    # Also check system model directory
+    if [ -z "$MODEL_FILE" ] && [ -d "/usr/local/share/theblackberets/models" ]; then
+        for name in "$EXPECTED_MODEL_FILE" "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"; do
+            [ -f "/usr/local/share/theblackberets/models/$name" ] && MODEL_FILE="/usr/local/share/theblackberets/models/$name" && break
+        done
+    fi
+    
+    if [ -n "$MODEL_FILE" ]; then
+        MODEL_SIZE=$(du -h "$MODEL_FILE" 2>/dev/null | cut -f1 || echo "unknown")
+        test_pass "Model file found: $(basename "$MODEL_FILE") ($MODEL_SIZE)"
+        
+        # Verify model file matches config
+        if [ -n "$EXPECTED_MODEL_FILE" ] && [ "$(basename "$MODEL_FILE")" != "$EXPECTED_MODEL_FILE" ]; then
+            test_warn "Model file name mismatch: found '$(basename "$MODEL_FILE")', expected '$EXPECTED_MODEL_FILE'"
+        fi
+    else
+        test_warn "Model file not found (expected: $EXPECTED_MODEL_FILE)"
+    fi
+    
+    # Check LocalAI version if available
+    if is_installed localai; then
+        LOCALAI_VERSION=$(localai --version 2>/dev/null | head -1 || echo "")
+        if [ -n "$LOCALAI_VERSION" ]; then
+            test_info "LocalAI version: $LOCALAI_VERSION"
+        fi
+    fi
+    
+    if is_port_in_use "$PORT"; then
+        PID=$(get_pid_by_port "$PORT")
+        if [ -n "$PID" ]; then
+            test_info "LocalAI running on port $PORT (PID: $PID)"
+            
+            # Try to get server information via API
+            if command -v curl >/dev/null 2>&1; then
+                # Check /v1/models endpoint for server info
+                MODELS_RESPONSE=$(curl -s -f "http://localhost:$PORT/v1/models" 2>/dev/null || echo "")
+                if [ -n "$MODELS_RESPONSE" ]; then
+                    MODEL_COUNT=$(echo "$MODELS_RESPONSE" | grep -o '"id"' | wc -l || echo "0")
+                    if [ "$MODEL_COUNT" -gt 0 ]; then
+                        test_info "LocalAI API responding: $MODEL_COUNT model(s) available"
+                        
+                        # Extract model IDs
+                        MODEL_IDS=$(echo "$MODELS_RESPONSE" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ',' | sed 's/,$//' || echo "")
+                        if [ -n "$MODEL_IDS" ]; then
+                            test_info "Available models: $MODEL_IDS"
+                        fi
+                    fi
+                fi
+                
+                # Try health/ready endpoints if available
+                HEALTH_RESPONSE=$(curl -s -f "http://localhost:$PORT/readyz" 2>/dev/null || curl -s -f "http://localhost:$PORT/health" 2>/dev/null || echo "")
+                if [ -n "$HEALTH_RESPONSE" ]; then
+                    test_info "LocalAI health endpoint responding"
+                fi
+                
+                # Test model request to check for backend errors
+                TEST_REQUEST=$(curl -s -X POST "http://localhost:$PORT/v1/chat/completions" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"model\": \"$EXPECTED_MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"test\"}], \"max_tokens\": 5}" 2>/dev/null || echo "")
+                
+                if echo "$TEST_REQUEST" | grep -q "backend not found"; then
+                    BACKEND_ERROR=$(echo "$TEST_REQUEST" | grep -o '"message":"[^"]*"' | sed 's/"message":"\([^"]*\)"/\1/' || echo "")
+                    REQUESTED_BACKEND=$(echo "$BACKEND_ERROR" | grep -o "backend not found: [^,]*" | sed 's/backend not found: //' || echo "")
+                    CONFIG_BACKEND=$(grep -E "^[[:space:]]*backend:" "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | sed 's/.*backend:[[:space:]]*\([^[:space:]]*\).*/\1/' || echo "")
+                    
+                    test_warn "Backend error detected: $BACKEND_ERROR"
+                    if [ -n "$REQUESTED_BACKEND" ] && [ -n "$CONFIG_BACKEND" ] && [ "$REQUESTED_BACKEND" != "$CONFIG_BACKEND" ]; then
+                        test_warn "Backend mismatch: LocalAI trying to use '$REQUESTED_BACKEND' but config has '$CONFIG_BACKEND'"
+                        test_info "This may indicate a model-specific config file or cached configuration"
+                        test_info "Try: justdo stop-localai && rm -f $MODELS_DIR/*.yaml && justdo start-localai"
+                    else
+                        test_warn "Backend '$REQUESTED_BACKEND' not available in LocalAI build"
+                        test_info "Available backends may be limited in pre-built binaries"
+                        test_info "Try: localai backends list (if available)"
+                    fi
+                elif echo "$TEST_REQUEST" | grep -q '"error"'; then
+                    ERROR_MSG=$(echo "$TEST_REQUEST" | grep -o '"message":"[^"]*"' | sed 's/"message":"\([^"]*\)"/\1/' || echo "")
+                    test_warn "Model request error: $ERROR_MSG"
+                elif echo "$TEST_REQUEST" | grep -q '"choices"'; then
+                    test_pass "Model request successful - backend working correctly"
+                fi
+            fi
+        else
+            test_info "LocalAI running on port $PORT (PID: unknown)"
+        fi
+    else
+        test_info "LocalAI not running"
+    fi
+    
+    log_info ""
+    
+    # Test 4: MCP Server
+    log_info "## MCP Server"
+    MCP_SCRIPT=""
+    for path in "../mcp/mcp-kali-server.py" "./mcp-kali-server.py" "/usr/local/bin/mcp-kali-server" "/usr/local/share/theblackberets/mcp-kali-server.py"; do
+        [ -f "$path" ] && MCP_SCRIPT="$path" && break
+    done
+    [ -n "$MCP_SCRIPT" ] && test_pass "MCP server script found" || test_warn "MCP server script not found (will be installed on configure)"
+    
+    is_installed python3 && test_pass "Python 3 available" || test_fail "Python 3 not found"
+    
+    if is_service_running "mcp-kali-server.py"; then
+        PID=$(pgrep -f "mcp-kali-server.py" | head -n1)
+        test_info "MCP server running (PID: $PID)"
+    else
+        test_info "MCP server not running"
+    fi
+    
+    log_info ""
+    
+    # Test 5: Kali Tools
+    log_info "## Kali Tools"
+    KALI_TOOLS=("nmap" "sqlmap" "hashcat" "john" "aircrack-ng" "hydra" "metasploit")
+    TOOLS_FOUND=0
+    for tool in "${KALI_TOOLS[@]}"; do
+        is_installed "$tool" && TOOLS_FOUND=$((TOOLS_FOUND + 1))
+    done
+    [ "$TOOLS_FOUND" -gt 0 ] && test_pass "Kali tools: $TOOLS_FOUND/${#KALI_TOOLS[@]} found" || test_warn "No Kali tools found"
+    
+    log_info ""
+    
+    # Summary
+    log_info "=========================================="
+    log_info "Test Summary"
+    log_info "=========================================="
+    log_info "Passed: $TESTS_PASSED"
+    log_info "Warnings: $TESTS_WARNINGS"
+    log_info "Failed: $TESTS_FAILED"
+    log_info ""
+    
+    if [ "$TESTS_FAILED" -eq 0 ]; then
+        [ "$TESTS_WARNINGS" -eq 0 ] && log_success "All tests passed!" || log_warning "Tests passed with warnings"
+        exit 0
+    else
+        log_fail "Some tests failed"
+        exit 1
+    fi
+

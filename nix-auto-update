@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# Nix Auto-Update Service Script
+# OpenRC service that watches for changes and applies configuration.nix
+# Runs automatically when flake.nix or configuration.nix changes
+# ============================================================================
+
+# Service configuration (defaults, will be overridden by configuration.nix)
+SERVICE_NAME="nix-auto-update"
+SERVICE_USER="root"
+REPO_DIR="/usr/local/share/theblackberets"
+CONFIG_FILE="$REPO_DIR/configuration.nix"
+FLAKE_FILE="$REPO_DIR/flake.nix"
+APPLY_SCRIPT="$REPO_DIR/apply-configuration.sh"
+LOG_FILE="/var/log/nix-auto-update.log"
+CHECK_INTERVAL=300  # 5 minutes default
+GIT_REPO="${GIT_REPO:-https://github.com/theblackberets/theblackberets.github.io.git}"
+GIT_BRANCH="${GIT_BRANCH:-main}"
+
+# Source shared config parser if available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/lib-config-parser.sh" ]; then
+    . "$SCRIPT_DIR/lib-config-parser.sh"
+elif [ -f "/usr/local/share/theblackberets/lib-config-parser.sh" ]; then
+    . "/usr/local/share/theblackberets/lib-config-parser.sh"
+fi
+
+# Read configuration from configuration.nix if available (optimized)
+if [ -f "$CONFIG_FILE" ]; then
+    # Extract values directly (more efficient than nested parser for simple values)
+    REPO_DIR_OVERRIDE=$(grep -A 10 "autoUpdate = {" "$CONFIG_FILE" 2>/dev/null | grep "repoDir" | sed 's/.*repoDir.*"\(.*\)".*/\1/' | head -n1)
+    if [ -n "$REPO_DIR_OVERRIDE" ]; then
+        REPO_DIR="$REPO_DIR_OVERRIDE"
+        CONFIG_FILE="$REPO_DIR/configuration.nix"
+        FLAKE_FILE="$REPO_DIR/flake.nix"
+        APPLY_SCRIPT="$REPO_DIR/apply-configuration.sh"
+    fi
+    
+    CHECK_INTERVAL_OVERRIDE=$(grep -A 10 "autoUpdate = {" "$CONFIG_FILE" 2>/dev/null | grep "checkInterval" | sed 's/.*checkInterval.*=\s*\([0-9]*\).*/\1/' | head -n1)
+    if [ -n "$CHECK_INTERVAL_OVERRIDE" ] && [ "$CHECK_INTERVAL_OVERRIDE" -gt 0 ] 2>/dev/null; then
+        CHECK_INTERVAL="$CHECK_INTERVAL_OVERRIDE"
+    fi
+    
+    LOG_FILE_OVERRIDE=$(grep -A 10 "autoUpdate = {" "$CONFIG_FILE" 2>/dev/null | grep "logFile" | sed 's/.*logFile.*"\(.*\)".*/\1/' | head -n1)
+    [ -n "$LOG_FILE_OVERRIDE" ] && LOG_FILE="$LOG_FILE_OVERRIDE"
+    
+    GIT_REPO_OVERRIDE=$(grep -A 10 "autoUpdate = {" "$CONFIG_FILE" 2>/dev/null | grep "gitRepository" | sed 's/.*gitRepository.*"\(.*\)".*/\1/' | head -n1)
+    [ -n "$GIT_REPO_OVERRIDE" ] && GIT_REPO="$GIT_REPO_OVERRIDE"
+    
+    GIT_BRANCH_OVERRIDE=$(grep -A 10 "autoUpdate = {" "$CONFIG_FILE" 2>/dev/null | grep "gitBranch" | sed 's/.*gitBranch.*"\(.*\)".*/\1/' | head -n1)
+    [ -n "$GIT_BRANCH_OVERRIDE" ] && GIT_BRANCH="$GIT_BRANCH_OVERRIDE"
+fi
+
+# Logging function
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$LOG_FILE" >&2
+}
+
+# Enable Nix commands
+enable_nix() {
+    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    elif [ -f /etc/profile.d/nix.sh ]; then
+        . /etc/profile.d/nix.sh
+    fi
+}
+
+# Check if files have changed
+check_for_changes() {
+    local last_hash_file="/var/lib/nix-auto-update/last-hash"
+    mkdir -p "$(dirname "$last_hash_file")"
+    
+    # Calculate hash of configuration files
+    local current_hash=""
+    if [ -f "$CONFIG_FILE" ] && [ -f "$FLAKE_FILE" ]; then
+        current_hash=$(sha256sum "$CONFIG_FILE" "$FLAKE_FILE" 2>/dev/null | sha256sum | cut -d' ' -f1)
+    else
+        log_error "Configuration files not found: $CONFIG_FILE or $FLAKE_FILE"
+        return 1
+    fi
+    
+    # Check if hash changed
+    if [ -f "$last_hash_file" ]; then
+        local last_hash=$(cat "$last_hash_file" 2>/dev/null || echo "")
+        if [ "$current_hash" = "$last_hash" ]; then
+            return 1  # No changes
+        fi
+    fi
+    
+    # Save new hash
+    echo "$current_hash" > "$last_hash_file"
+    return 0  # Changes detected
+}
+
+# Pull latest changes from git (if configured)
+pull_latest() {
+    if [ -d "$REPO_DIR/.git" ]; then
+        log "Pulling latest changes from git..."
+        enable_nix
+        cd "$REPO_DIR"
+        if git pull origin "$GIT_BRANCH" >/dev/null 2>&1; then
+            log "✓ Git pull successful"
+            return 0
+        else
+            log_warning "Git pull failed, using local files"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Apply configuration
+apply_configuration() {
+    log "Applying configuration changes..."
+    
+    if [ ! -f "$APPLY_SCRIPT" ]; then
+        log_error "Apply script not found: $APPLY_SCRIPT"
+        return 1
+    fi
+    
+    if [ ! -x "$APPLY_SCRIPT" ]; then
+        chmod +x "$APPLY_SCRIPT"
+    fi
+    
+    enable_nix
+    
+    # Run apply script and capture output
+    if "$APPLY_SCRIPT" >> "$LOG_FILE" 2>&1; then
+        log "✓ Configuration applied successfully"
+        return 0
+    else
+        log_error "Failed to apply configuration"
+        return 1
+    fi
+}
+
+# Main service loop
+run_service() {
+    log "Starting Nix auto-update service..."
+    log "Repository: $REPO_DIR"
+    log "Check interval: ${CHECK_INTERVAL}s"
+    log ""
+    
+    # Initial pull if git repo exists
+    pull_latest
+    
+    # Main loop
+    while true; do
+        # Pull latest changes from git
+        if pull_latest; then
+            # Check if files changed
+            if check_for_changes; then
+                log "Configuration changes detected, applying..."
+                apply_configuration
+            fi
+        fi
+        
+        # Sleep until next check
+        sleep "$CHECK_INTERVAL"
+    done
+}
+
+# Service control functions
+start() {
+    log "Starting $SERVICE_NAME service..."
+    
+    # Check if already running
+    if [ -f "/var/run/$SERVICE_NAME.pid" ]; then
+        local pid=$(cat "/var/run/$SERVICE_NAME.pid" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            log "Service is already running (PID: $pid)"
+            return 0
+        fi
+    fi
+    
+    # Start service in background
+    run_service &
+    local pid=$!
+    echo "$pid" > "/var/run/$SERVICE_NAME.pid"
+    
+    log "Service started (PID: $pid)"
+}
+
+stop() {
+    log "Stopping $SERVICE_NAME service..."
+    
+    if [ -f "/var/run/$SERVICE_NAME.pid" ]; then
+        local pid=$(cat "/var/run/$SERVICE_NAME.pid" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            rm -f "/var/run/$SERVICE_NAME.pid"
+            log "Service stopped"
+        else
+            log "Service was not running"
+            rm -f "/var/run/$SERVICE_NAME.pid"
+        fi
+    else
+        log "Service was not running"
+    fi
+}
+
+status() {
+    if [ -f "/var/run/$SERVICE_NAME.pid" ]; then
+        local pid=$(cat "/var/run/$SERVICE_NAME.pid" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$SERVICE_NAME is running (PID: $pid)"
+            return 0
+        else
+            echo "$SERVICE_NAME is not running"
+            rm -f "/var/run/$SERVICE_NAME.pid"
+            return 1
+        fi
+    else
+        echo "$SERVICE_NAME is not running"
+        return 1
+    fi
+}
+
+# Handle service commands
+case "${1:-}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0
+

@@ -1,0 +1,301 @@
+# Nix Package Manager Feature
+# All Nix-related operations
+
+# Install Nix package manager
+install-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Check if already installed
+    if is_installed nix; then
+        log_info "Nix already installed, skipping"
+        exit 0
+    fi
+    
+    log_info "Installing Nix package manager..."
+    
+    # Verify Alpine Linux
+    require_command apk "apk add apk-tools"
+    
+    # Install dependencies (including Python 3 for MCP server)
+    log_info "Installing dependencies..."
+    apk add --no-cache bash curl xz git ca-certificates shadow sudo python3 >/dev/null 2>&1 || \
+        die "Failed to install dependencies"
+    
+    # Enable community repository
+    if ! grep -q "^[^#].*community" /etc/apk/repositories 2>/dev/null; then
+        ALPINE_VERSION=$(cat /etc/alpine-release 2>/dev/null | cut -d. -f1,2 || echo "edge")
+        if [ "$ALPINE_VERSION" != "edge" ]; then
+            echo "http://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community" >> /etc/apk/repositories
+        else
+            echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+        fi
+        apk update >/dev/null 2>&1 || true
+    fi
+    
+    # Install Nix from Alpine repository
+    if apk add --no-cache nix >/dev/null 2>&1; then
+        log_success "Nix installed from Alpine repository"
+        
+        # Configure Nix
+        mkdir -p /nix
+        chmod 0755 /nix
+        
+        # Create nixbld user if needed
+        if ! id -u nixbld >/dev/null 2>&1; then
+            addgroup -g 30000 nixbld 2>/dev/null || true
+            adduser -D -u 30000 -G nixbld -s /bin/sh nixbld 2>/dev/null || true
+        fi
+        
+        # Start Nix daemon
+        if command -v rc-service >/dev/null 2>&1; then
+            rc-service nix-daemon start >/dev/null 2>&1 || true
+            rc-update add nix-daemon >/dev/null 2>&1 || true
+            sleep 2
+        elif [ -f /etc/init.d/nix-daemon ]; then
+            /etc/init.d/nix-daemon start >/dev/null 2>&1 || true
+            sleep 2
+        fi
+        
+        # Verify daemon is running
+        MAX_RETRIES=5
+        RETRY=0
+        while [ $RETRY -lt $MAX_RETRIES ]; do
+            if [ -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null; then
+                break
+            fi
+            RETRY=$((RETRY + 1))
+            log_info "Waiting for Nix daemon socket... ($RETRY/$MAX_RETRIES)"
+            sleep 1
+        done
+        
+        if [ ! -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null; then
+            log_warn "Nix daemon socket not found, trying to start daemon directly..."
+            if command -v nix-daemon >/dev/null 2>&1; then
+                nix-daemon >/dev/null 2>&1 &
+                sleep 2
+            fi
+        fi
+        
+        # Source Nix environment
+        if [ -f /etc/profile.d/nix.sh ]; then
+            . /etc/profile.d/nix.sh
+        fi
+        
+        log_success "Nix configured and started"
+        
+        # Optimize Nix for faster downloads (restart daemon after config change)
+        just optimize-nix || log_warn "Nix optimization had issues, continuing..."
+        
+        # Ensure daemon is still running after optimization
+        if [ ! -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null; then
+            log_info "Restarting Nix daemon after optimization..."
+            if command -v rc-service >/dev/null 2>&1; then
+                rc-service nix-daemon restart >/dev/null 2>&1 || true
+                sleep 2
+            elif [ -f /etc/init.d/nix-daemon ]; then
+                /etc/init.d/nix-daemon restart >/dev/null 2>&1 || true
+                sleep 2
+            fi
+        fi
+    else
+        die "Failed to install Nix"
+    fi
+
+# Optimize Nix configuration for faster downloads
+# Configures binary caches, parallel downloads, and connection limits
+optimize-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Optimizing Nix configuration for faster downloads..."
+    
+    require_command nix "just install-nix"
+    
+    # Ensure /etc/nix directory exists
+    mkdir -p /etc/nix
+    
+    # Backup existing config if it exists
+    NIX_CONF="/etc/nix/nix.conf"
+    if [ -f "$NIX_CONF" ]; then
+        cp "$NIX_CONF" "${NIX_CONF}.backup.$(date +%s)" 2>/dev/null || true
+    fi
+    
+    # Configure binary cache (CRITICAL: 10-100x speedup - uses pre-built packages)
+    # Parallel downloads (HELPFUL: 2-5x speedup)
+    {
+        echo "substituters = https://cache.nixos.org"
+        echo "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        echo "experimental-features = nix-command flakes"
+        echo "max-substitution-jobs = 16"
+        echo "http-connections = 32"
+        echo "max-jobs = auto"
+        echo "cores = 0"
+        echo "auto-optimise-store = true"
+    } > "$NIX_CONF"
+    
+    # Set proper permissions
+    chmod 644 "$NIX_CONF" 2>/dev/null || true
+    
+    log_success "Nix optimized (binary cache + parallel downloads enabled)"
+    
+    # Restart daemon to apply config
+    if command -v rc-service >/dev/null 2>&1; then
+        if rc-service nix-daemon status >/dev/null 2>&1; then
+            rc-service nix-daemon restart >/dev/null 2>&1 || true
+            sleep 2
+        else
+            rc-service nix-daemon start >/dev/null 2>&1 || true
+            sleep 2
+        fi
+    elif [ -f /etc/init.d/nix-daemon ]; then
+        if /etc/init.d/nix-daemon status >/dev/null 2>&1; then
+            /etc/init.d/nix-daemon restart >/dev/null 2>&1 || true
+            sleep 2
+        else
+            /etc/init.d/nix-daemon start >/dev/null 2>&1 || true
+            sleep 2
+        fi
+    fi
+    
+    # Verify daemon socket exists and is ready after restart
+    MAX_RETRIES=5
+    RETRY=0
+    while [ $RETRY -lt $MAX_RETRIES ]; do
+        if [ -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null; then
+            # Source environment and test connection
+            if [ -f /etc/profile.d/nix.sh ]; then
+                . /etc/profile.d/nix.sh 2>/dev/null || true
+            fi
+            if nix --version >/dev/null 2>&1; then
+                log_success "Nix daemon restarted and ready"
+                break
+            fi
+        fi
+        RETRY=$((RETRY + 1))
+        sleep 1
+    done
+    
+    if [ ! -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null; then
+        log_warn "Daemon socket not found after restart, trying direct start..."
+        if command -v nix-daemon >/dev/null 2>&1; then
+            nix-daemon >/dev/null 2>&1 &
+            sleep 3
+        fi
+    fi
+
+# Test Nix (feature-specific)
+test-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    if [ -f test.sh ]; then
+        bash test.sh
+    else
+        log_warn "Nix test script not found"
+        exit 0
+    fi
+
+# Cleanup Nix (feature-specific)
+cleanup-nix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Cleaning up Nix..."
+    
+    # Stop Nix daemon
+    if command -v rc-service >/dev/null 2>&1; then
+        rc-service nix-daemon stop >/dev/null 2>&1 || true
+        rc-update del nix-daemon >/dev/null 2>&1 || true
+    elif [ -f /etc/init.d/nix-daemon ]; then
+        /etc/init.d/nix-daemon stop >/dev/null 2>&1 || true
+    fi
+    
+    # Kill any remaining Nix processes
+    pkill -f "nix-daemon" 2>/dev/null || true
+    sleep 1
+    
+    # Remove Nix package
+    if command -v apk >/dev/null 2>&1; then
+        apk del nix >/dev/null 2>&1 || true
+    fi
+    
+    # Remove nixbld user
+    if id -u nixbld >/dev/null 2>&1; then
+        deluser nixbld >/dev/null 2>&1 || true
+    fi
+    
+    # Remove Nix store and config
+    rm -rf /nix 2>/dev/null || true
+    rm -f /etc/nix/nix.conf 2>/dev/null || true
+    
+    # Clean up temp files
+    rm -rf /tmp/nix-* 2>/dev/null || true
+    rm -rf /var/tmp/nix-* 2>/dev/null || true
+    
+    log_success "Nix cleanup completed"
+

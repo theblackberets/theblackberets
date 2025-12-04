@@ -1,0 +1,328 @@
+# Kali Tools Feature
+# Security tools installation via Nix
+
+# Install Kali tools via Nix
+install-kali-tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Installing Kali tools..."
+    
+    require_command nix "just install-nix"
+    
+    # Source Nix environment first (needed for nix commands)
+    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+    elif [ -f /etc/profile.d/nix.sh ]; then
+        . /etc/profile.d/nix.sh 2>/dev/null || true
+    elif [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+    fi
+    
+    # CRITICAL: Ensure Nix daemon is running before proceeding
+    log_info "Ensuring Nix daemon is running..."
+    
+    # Function to test if daemon is actually responding (not just socket exists)
+    test_daemon_ready() {
+        # Test with a command that actually requires the daemon
+        nix eval --expr '1 + 1' >/dev/null 2>&1 || \
+        nix store info /nix/store >/dev/null 2>&1 || \
+        nix --version >/dev/null 2>&1
+    }
+    
+    # Start daemon if not running
+    if ! pgrep -f "nix-daemon" >/dev/null 2>&1 || ! [ -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null; then
+        log_info "Starting Nix daemon..."
+        if command -v rc-service >/dev/null 2>&1; then
+            rc-service nix-daemon start >/dev/null 2>&1 || true
+            rc-update add nix-daemon >/dev/null 2>&1 || true
+        elif [ -f /etc/init.d/nix-daemon ]; then
+            /etc/init.d/nix-daemon start >/dev/null 2>&1 || true
+        elif command -v nix-daemon >/dev/null 2>&1; then
+            nix-daemon >/dev/null 2>&1 &
+        fi
+    fi
+    
+    # Wait for daemon to be ready (test actual connection, not just socket)
+    MAX_RETRIES=20
+    RETRY=0
+    DAEMON_READY=false
+    while [ $RETRY -lt $MAX_RETRIES ]; do
+        if [ -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null && test_daemon_ready; then
+            DAEMON_READY=true
+            log_success "Nix daemon is running and ready"
+            break
+        fi
+        RETRY=$((RETRY + 1))
+        if [ $RETRY -lt $MAX_RETRIES ]; then
+            log_info "Waiting for Nix daemon to be ready... ($RETRY/$MAX_RETRIES)"
+            sleep 2
+        fi
+    done
+    
+    if [ "$DAEMON_READY" != "true" ]; then
+        log_warn "Nix daemon is not responding, but continuing anyway..."
+        log_info "Socket exists: $([ -S /nix/var/nix/daemon-socket/socket ] && echo 'yes' || echo 'no')"
+        log_info "Daemon process running: $(pgrep -f 'nix-daemon' >/dev/null 2>&1 && echo 'yes' || echo 'no')"
+        if command -v rc-service >/dev/null 2>&1; then
+            log_info "Daemon status:"
+            rc-service nix-daemon status || true
+        fi
+    fi
+    
+    # CRITICAL: Optimize Nix BEFORE downloads (binary cache = 10-100x faster)
+    # This restarts the daemon, so we need to wait again after
+    log_info "Optimizing Nix configuration..."
+    just optimize-nix >/dev/null 2>&1 || true
+    
+    # Wait for daemon to be ready again after optimization restart
+    MAX_RETRIES=15
+    RETRY=0
+    while [ $RETRY -lt $MAX_RETRIES ]; do
+        if [ -S /nix/var/nix/daemon-socket/socket ] 2>/dev/null && test_daemon_ready; then
+            log_success "Nix daemon ready after optimization"
+            break
+        fi
+        RETRY=$((RETRY + 1))
+        if [ $RETRY -lt $MAX_RETRIES ]; then
+            sleep 2
+        fi
+    done
+    
+    # Find flake.nix (check multiple locations including kali/ directory)
+    FLAKE_DIR=""
+    FLAKE_FILE=""
+    
+    # Check relative to current directory (when running from kali/ directory)
+    for path in "./flake.nix" "../kali/flake.nix" "flake.nix"; do
+        if [ -f "$path" ]; then
+            FLAKE_FILE="$path"
+            FLAKE_DIR="$(dirname "$(readlink -f "$path" 2>/dev/null || echo "$path")")"
+            break
+        fi
+    done
+    
+    # Check standard locations
+    if [ -z "$FLAKE_DIR" ]; then
+        for path in "/usr/local/share/theblackberets/kali" "/usr/local/share/theblackberets" "/root/project/kali" "/root/project" "$(pwd)/kali" "$(pwd)"; do
+            if [ -f "$path/flake.nix" ]; then
+                FLAKE_DIR="$path"
+                FLAKE_FILE="$path/flake.nix"
+                break
+            fi
+        done
+    fi
+    
+    # If still not found, try to find project root and check kali/ subdirectory
+    if [ -z "$FLAKE_DIR" ]; then
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/kali/flake.nix" ]; then
+                FLAKE_DIR="$CURRENT_DIR/kali"
+                FLAKE_FILE="$CURRENT_DIR/kali/flake.nix"
+                break
+            elif [ -f "$CURRENT_DIR/flake.nix" ]; then
+                FLAKE_DIR="$CURRENT_DIR"
+                FLAKE_FILE="$CURRENT_DIR/flake.nix"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    if [ -z "$FLAKE_DIR" ] || [ ! -f "$FLAKE_FILE" ]; then
+        log_warn "flake.nix not found, skipping Kali tools installation"
+        log_info "Searched in: ./flake.nix, ../kali/flake.nix, /usr/local/share/theblackberets/kali/, and project root"
+        exit 0
+    fi
+    
+    log_info "Found flake.nix at: $FLAKE_FILE"
+    
+    # Determine package to install
+    KALI_MODE="${KALI_TOOLS_MODE:-minimal}"
+    case "$KALI_MODE" in
+        minimal) KALI_PACKAGE="kali-tools-minimal" ;;
+        full) KALI_PACKAGE="kali-tools-full" ;;
+        *) KALI_PACKAGE="kali-tools" ;;
+    esac
+    
+    log_info "Installing Kali tools (${KALI_MODE})..."
+    cd "$FLAKE_DIR" || {
+        log_warn "Cannot change to flake directory: $FLAKE_DIR"
+        exit 0
+    }
+    
+    # Final check: verify daemon is ready before installation
+    if ! test_daemon_ready; then
+        log_warn "Nix daemon not responding, attempting to start..."
+        if command -v rc-service >/dev/null 2>&1; then
+            rc-service nix-daemon restart >/dev/null 2>&1 || rc-service nix-daemon start >/dev/null 2>&1 || true
+            sleep 3
+        elif [ -f /etc/init.d/nix-daemon ]; then
+            /etc/init.d/nix-daemon restart >/dev/null 2>&1 || /etc/init.d/nix-daemon start >/dev/null 2>&1 || true
+            sleep 3
+        fi
+        
+        # Wait one more time
+        MAX_RETRIES=10
+        RETRY=0
+        while [ $RETRY -lt $MAX_RETRIES ]; do
+            if test_daemon_ready; then
+                log_success "Nix daemon is ready"
+                break
+            fi
+            RETRY=$((RETRY + 1))
+            sleep 1
+        done
+    fi
+    
+    # IDEMPOTENCY CHECK: Check if Kali tools are already installed
+    log_info "Checking if Kali tools are already installed..."
+    INSTALLED_KALI=$(nix profile list 2>/dev/null | grep -i "kali-tools" || true)
+    if [ -n "$INSTALLED_KALI" ]; then
+        INSTALLED_PACKAGE=$(echo "$INSTALLED_KALI" | head -n1 | awk '{print $NF}' || echo "unknown")
+        log_info "Kali tools already installed in profile: $INSTALLED_PACKAGE"
+        log_info "To reinstall, run: just cleanup-kali && just install-kali-tools"
+        log_success "Kali tools installation skipped (already installed)"
+        exit 0
+    fi
+    
+    # Install with timeout (binary cache makes this fast)
+    log_info "Installing ${KALI_PACKAGE}..."
+    TEMP_LOG=$(mktemp)
+    trap "rm -f $TEMP_LOG" EXIT
+    
+    if timeout 1800 nix profile add --print-build-logs "$FLAKE_DIR#${KALI_PACKAGE}" >"$TEMP_LOG" 2>&1; then
+        # VERIFICATION: Verify installation succeeded
+        VERIFY_INSTALL=$(nix profile list 2>/dev/null | grep -i "kali-tools" || true)
+        if [ -n "$VERIFY_INSTALL" ]; then
+            INSTALLED_PACKAGE=$(echo "$VERIFY_INSTALL" | head -n1 | awk '{print $NF}' || echo "unknown")
+            log_success "Kali tools (${KALI_MODE}) installed successfully"
+            log_info "Installed package: $INSTALLED_PACKAGE"
+            
+            # Show relevant output lines from installation
+            if [ -f "$TEMP_LOG" ] && [ -s "$TEMP_LOG" ]; then
+                grep -E "(built|installed|activated|copying)" "$TEMP_LOG" | tail -n 5 | while read -r line; do
+                    log_info "  $line"
+                done || true
+            fi
+        else
+            log_warn "Installation completed but package not found in profile"
+            log_info "This may indicate an installation issue. Check output:"
+            if [ -f "$TEMP_LOG" ] && [ -s "$TEMP_LOG" ]; then
+                tail -n 10 "$TEMP_LOG" | while read -r line; do
+                    log_error "  $line"
+                done || true
+            fi
+        fi
+    else
+        EXIT_CODE=$?
+        if [ "$EXIT_CODE" = "124" ]; then
+            log_warn "Installation timed out (30 minutes)"
+            log_info "This may be due to slow network or large package size"
+            log_info "Try again or check your network connection"
+        else
+            log_warn "Installation failed (exit code: $EXIT_CODE)"
+            log_info "Error output:"
+            if [ -f "$TEMP_LOG" ] && [ -s "$TEMP_LOG" ]; then
+                tail -n 20 "$TEMP_LOG" | while read -r line; do
+                    log_error "  $line"
+                done || true
+            fi
+            log_info "To troubleshoot:"
+            log_info "  1. Check Nix daemon is running: rc-service nix-daemon status"
+            log_info "  2. Verify flake.nix is valid: nix flake check '$FLAKE_DIR'"
+            log_info "  3. Try manual installation: nix profile add '$FLAKE_DIR#${KALI_PACKAGE}'"
+        fi
+    fi
+    
+    # Cleanup
+    rm -f "$TEMP_LOG"
+    trap - EXIT
+
+# Test Kali tools (feature-specific)
+test-kali:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    if [ -f test.sh ]; then
+        bash test.sh
+    else
+        log_warn "Kali test script not found"
+        exit 0
+    fi
+
+# Cleanup Kali tools (feature-specific)
+cleanup-kali:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Cleaning up Kali tools..."
+    
+    # Remove Kali tools from Nix profile if Nix is available
+    if command -v nix >/dev/null 2>&1; then
+        # Source Nix environment
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+        elif [ -f /etc/profile.d/nix.sh ]; then
+            . /etc/profile.d/nix.sh 2>/dev/null || true
+        fi
+        
+        # Remove Kali tools packages from profile
+        nix profile list 2>/dev/null | grep -i kali | awk '{print $1}' | while read -r profile_id; do
+            [ -n "$profile_id" ] && nix profile remove "$profile_id" 2>/dev/null || true
+        done
+        
+        log_info "Kali tools removed from Nix profile"
+    fi
+    
+    log_success "Kali tools cleanup completed"
+

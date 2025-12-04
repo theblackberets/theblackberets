@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+# OpenRC service script for Nix Auto-Update
+# Automatically applies configuration.nix when flake.nix changes
+
+name="Nix Auto-Update Service"
+description="Automatically applies configuration.nix when flake.nix changes"
+command="/usr/local/share/theblackberets/nix-auto-update"
+command_args="start"
+pidfile="/var/run/nix-auto-update.pid"
+command_background="yes"
+
+depend() {
+    need nix-daemon
+    after nix-daemon
+}
+
+start_pre() {
+    # Ensure script is executable
+    if [ -f "$command" ]; then
+        chmod +x "$command" || true
+    fi
+    
+    # Ensure log directory exists
+    mkdir -p "$(dirname /var/log/nix-auto-update.log)" || true
+}
+
+stop_post() {
+    # Clean up PID file
+    rm -f "$pidfile" || true
+}
+

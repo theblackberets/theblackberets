@@ -1,0 +1,585 @@
+# The Black Berets - Zero-Config Hacking Tool
+
+## Core Philosophy: Lean, Mean, Zero-Config
+
+**PRINCIPLE**: On a new computer, just run `doas just install` - everything works immediately. No configuration needed.
+
+**JUSTFILE-FIRST**: All operations via `justfile` recipes. `just` and `justdo` commands are the PRIMARY interface. Everything else is background.
+
+**ALL COMMANDS WORK BY DEFAULT**: All `justdo` commands work immediately without parameters. Sensible defaults for everything. Zero configuration required.
+
+**LEAN CODE**: Every line must earn its place. No bloat. No unnecessary complexity.
+
+**ROBUST ARCHITECTURE**: Modular design with shared libraries, type-safe config access via Nix, comprehensive error handling.
+
+## Environment
+- **OS**: Alpine Linux on Chromebook
+- **Package Manager**: Nix + just
+- **Setup**: Zero-config install - everything works after `doas just install`
+- **Status**: Kali tools + LocalAI + MCP server installed by default
+- **Architecture**: Justfile-based with shared libraries in `lib/`
+
+## Installation & Cleanup
+
+**Installation (ZERO CONFIG - works immediately):**
+```bash
+doas just install  # Installs everything: Nix, just, Kali tools, LocalAI, MCP server
+# After this, you can immediately use:
+justdo start       # Start LocalAI for hacking - works by default
+justdo test        # Test environment - works by default
+```
+
+**All commands work by default** - No parameters required. Every `justdo` command has sensible defaults and works immediately without any configuration.
+
+**Cleanup (removes EVERYTHING):**
+```bash
+doas just cleanup  # Removes ALL: Nix, just, Kali tools, LocalAI, MCP, configs, everything
+```
+
+**All operations:**
+- Zero configuration required
+- Work by default with proper error handling
+- Are idempotent (safe to rerun)
+- Use shared libraries for consistency
+- Validate inputs and check prerequisites
+- Provide clear error messages
+
+## Core Commands
+
+### Installation & Configuration
+- `doas just install` - Install everything (Nix, just, Kali tools, LocalAI, MCP server)
+- `doas just configure` - Apply configuration from configuration.nix
+- `doas just cleanup` - Remove all installed components
+
+### Service Management
+- `justdo start` - Start all services (LocalAI, MCP) - smart detection, only starts if not running
+- `justdo stop` - Stop all services
+- `justdo start-localai` - Start LocalAI server (works by default, uses port 8080, detects if already running)
+- `justdo stop-localai` - Stop LocalAI server
+- `justdo start-mcp` - Start MCP server (finds script in multiple locations, throws error if already running)
+- `justdo stop-mcp` - Stop MCP server
+- `justdo status` - Check status of all services
+
+**Smart Start Logic:**
+- Checks if service is already running (port + process verification)
+- LocalAI: Only starts if not already running (idempotent)
+- MCP: Throws error if already running (prevents duplicate instances)
+- Chat interface: Automatically checks for MCP server and attempts to start it if missing
+- Verifies process is actually the expected service (not just port in use)
+- MCP script found in multiple locations (feature directories, system install)
+
+### Testing
+- `justdo test` - Comprehensive environment test (works by default, reads from configuration.nix)
+
+### Model Management
+- `justdo download-model MODEL_DIR="./models"` - Download model (has default)
+
+## File Structure
+
+**Core Files:**
+- `justfile` - Main orchestrator (imports feature justfiles, provides high-level commands)
+- `config/configuration.nix` - Declarative configuration (Nix module)
+- `kali/flake.nix` - Nix packages (Kali tools)
+- `config/config-to-json.nix` - Converts configuration.nix to JSON for type-safe access
+
+**Feature Directories (self-contained modules):**
+- `nix/` - Nix package manager (justfile, test.sh)
+- `just/` - just/justdo command runner (justfile, test.sh)
+- `kali/` - Kali tools (justfile, flake.nix, test.sh)
+- `localai/` - LocalAI server (justfile, chat.py, test.sh)
+- `mcp/` - MCP server (justfile, mcp-kali-server.py, test.sh)
+- `models-management/` - Model management (justfile, test.sh)
+- `services/` - Service management (justfile, test.sh)
+- `test/` - Testing utilities (justfile, test.sh)
+
+**Note:** `models/` directory is gitignored (for downloaded model files), but `models-management/` contains the justfile (tracked in git)
+
+**Library Files (`lib/`):**
+- `lib/bootstrap.sh` - Centralized library loader (finds and loads all libraries)
+- `lib/config.sh` - Configuration access (uses Nix evaluation, reads JSON via jq)
+- `lib/validation.sh` - Input validation and error handling
+- `lib/idempotent.sh` - Idempotency helpers (check state before operations)
+- `lib/logging.sh` - Structured logging (DEBUG, INFO, WARN, ERROR)
+- `lib/test.sh` - Testing utilities (shared test functions)
+
+## Architecture
+
+### Justfile-Based Design
+- **All operations** are justfile recipes
+- **Shared libraries** in `lib/` directory
+- **Type-safe config** via Nix evaluation (config-to-json.nix)
+- **Modular** - each recipe has single responsibility
+- **Idempotent** - safe to rerun any command
+- **Robust** - comprehensive error handling and validation
+
+### Configuration Access Pattern
+```bash
+# Source libraries (use bootstrap.sh for centralized loading)
+# Find and load bootstrap (works from any directory)
+if [ -f lib/bootstrap.sh ]; then
+    . lib/bootstrap.sh
+elif [ -f ../lib/bootstrap.sh ]; then
+    . ../lib/bootstrap.sh
+else
+    # Try to find lib directory
+    CURRENT_DIR="$(pwd)"
+    while [ "$CURRENT_DIR" != "/" ]; do
+        if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+            . "$CURRENT_DIR/lib/bootstrap.sh"
+            break
+        fi
+        CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+    done
+fi
+
+# Get config value (uses Nix evaluation, falls back to defaults)
+PORT=$(get_config "ai.localAI.defaultPort" "8080")
+MODEL_DIR=$(get_config "ai.localAI.modelDir" "./models")
+
+# Validate
+validate_port "$PORT"
+```
+
+### Error Handling Pattern
+```bash
+# Use die() for fatal errors
+require_command nix "just install-nix"
+validate_port "$PORT"
+
+# Use log functions for output
+log_info "Starting service..."
+log_success "Service started"
+log_warn "Optional component missing"
+log_error "Operation failed"
+```
+
+### Idempotency Pattern
+```bash
+# Check state before operations
+if is_installed nix; then
+    log_info "Nix already installed, skipping"
+    exit 0
+fi
+
+if is_port_in_use "$PORT"; then
+    PID=$(get_pid_by_port "$PORT")
+    log_info "Service already running (PID: $PID)"
+    exit 0
+fi
+```
+
+## Installation State
+
+**After running `curl -fsSL https://theblackberets.github.io/install.sh | doas bash`, everything is installed:**
+- ✅ Nix package manager (configured, daemon started and verified)
+- ✅ just command runner (available globally)
+- ✅ Default justfile (at `/usr/local/share/theblackberets/justfile`)
+- ✅ All feature directories copied to `/usr/local/share/theblackberets/`
+- ✅ Environment configured (profiles, aliases, wrappers)
+- ✅ justdo command available
+- ✅ Kali tools installed via Nix (flake.nix found, profile add successful - properly fails on errors)
+- ✅ LocalAI installed and configured
+- ✅ MCP server installed (script copied to multiple locations)
+
+**To clean everything:**
+- Run `doas just cleanup` to remove all installed components
+- Two-phase cleanup: feature-specific cleanup first, then general cleanup
+- Removes: Nix, just, Kali tools, LocalAI, MCP, configs, all files
+- Safe to run multiple times (idempotent)
+
+## Usage Pattern (Zero-Config)
+
+```bash
+# 1. Install (ZERO CONFIG - everything installed by default)
+curl -fsSL https://theblackberets.github.io/install.sh | doas bash
+# ✅ Pre-flight checks passed
+# ✅ All files downloaded (feature directories, libraries, configs)
+# ✅ Nix installed → daemon started and verified → optimized
+# ✅ just/justdo installed → environment setup → feature directories copied
+# ✅ Kali tools installed → Nix daemon verified → flake.nix found → profile add
+# ✅ LocalAI installed → binary downloaded → config created
+# ✅ MCP server installed → script copied to multiple locations
+# ✅ Post-install verification passed
+
+# 2. Configure (applies configuration.nix, downloads model if enabled)
+doas just configure
+
+# 3. Start services (all commands work by default)
+justdo start        # Start LocalAI (uses port 8080, default directories)
+justdo start-mcp   # Start MCP server
+
+# 4. Check status
+justdo status      # Check all services
+
+# 5. Test environment
+justdo test        # Comprehensive test
+
+# 6. Cleanup (removes EVERYTHING)
+doas just cleanup  # Two-phase cleanup:
+                   #   Phase 1: Feature-specific cleanup (cleanup-localai, cleanup-mcp, etc.)
+                   #   Phase 2: General cleanup (configs, temp files, system files)
+```
+
+**All `justdo` commands work by default** - No parameters needed. Sensible defaults for:
+- Ports (default: 8080)
+- Directories (default: ./models, ./localai-config)
+- All settings have sensible defaults
+- Configuration via `configuration.nix` is optional
+
+---
+
+## CRITICAL: Code Quality Standards
+
+### Robustness & Stability Requirements
+
+**MANDATORY: Every justfile recipe MUST:**
+- Start with `#!/usr/bin/env bash` and `set -euo pipefail`
+- Source shared libraries from `lib/` directory
+- Use library functions (get_config, validate_port, log_info, etc.)
+- Check idempotency before operations
+- Provide clear error messages
+
+**MANDATORY: Resource Management**
+- **Temp files**: ALWAYS use `trap` for cleanup
+  ```bash
+  TEMP_FILE=$(mktemp)
+  trap "rm -f $TEMP_FILE" EXIT
+  ```
+- **Background processes**: ALWAYS track PIDs and cleanup
+  ```bash
+  PROCESS_PID=$!
+  trap "kill $PROCESS_PID 2>/dev/null || true" EXIT
+  ```
+- **Network resources**: ALWAYS check availability before use
+  ```bash
+  if ! is_port_in_use "$PORT"; then
+      # Start service
+  fi
+  ```
+
+**MANDATORY: Input Validation**
+- **Required parameters**: Use `validate_required` or check immediately
+  ```bash
+  validate_required "PORT" "$PORT"
+  ```
+- **Ports**: Use `validate_port` helper
+  ```bash
+  validate_port "$PORT"
+  ```
+- **Files**: Use `validate_path` helper
+  ```bash
+  validate_path "$CONFIG_FILE" "file"
+  ```
+- **Commands**: Use `require_command` helper
+  ```bash
+  require_command nix "just install-nix"
+  ```
+
+**MANDATORY: Configuration Access**
+- **Always use `get_config`** from `lib/config.sh`
+- **Never parse Nix files directly** with grep/sed
+- **Use Nix evaluation** via `config-to-json.nix`
+- **Provide defaults** for all config values
+  ```bash
+  PORT=$(get_config "ai.localAI.defaultPort" "8080")
+  ```
+
+**MANDATORY: Error Handling**
+- Use `die()` for fatal errors (exits with code 1)
+- Use `log_error()` for non-fatal errors
+- Use `log_warn()` for warnings
+- Use `log_info()` for informational messages
+- Use `log_success()` for success messages
+- Never silently fail - always report what went wrong
+
+**MANDATORY: Idempotent Operations**
+- All commands MUST be safe to rerun
+- Check state before modifying using `is_installed`, `is_port_in_use`, etc.
+- Skip if already done
+- Handle partial installations gracefully
+
+### Performance Guidelines
+
+**Efficient Operations:**
+- Use `command -v` instead of `which` (POSIX compliant, faster)
+- Redirect output to `/dev/null` when not needed: `command >/dev/null 2>&1`
+- Use `|| true` for optional operations that may fail
+- Batch operations when possible
+
+**Resource Cleanup:**
+- Clean up temp files immediately after use
+- Stop background processes when done
+- Release network interfaces properly
+- Remove temporary directories
+
+**Network Operations:**
+- Check service availability before making requests
+- Use appropriate timeouts for network calls
+- Handle connection failures gracefully
+- Provide fallback mechanisms when possible
+
+### Code Clarity Standards
+
+**Consistent Structure:**
+1. Shebang and strict mode (`set -euo pipefail`)
+2. Source libraries
+3. Variable declarations (with defaults from config)
+4. Input validation
+5. Idempotency checks
+6. Main logic
+7. Cleanup (handled by traps)
+
+**Naming Conventions:**
+- Use UPPERCASE for environment variables and constants
+- Use lowercase for local variables
+- Use descriptive names: `MODEL_DIR` not `dir`
+- Prefix error messages with "ERROR:", warnings with "WARNING:"
+
+**Error Messages:**
+- Be specific: "nmap not found" not "command failed"
+- Provide solutions: "Install with: just install-kali-tools"
+- Use consistent format: "ERROR: [what] [why] [how to fix]"
+
+**Comments:**
+- Explain WHY, not WHAT
+- Document non-obvious behavior
+- Note workarounds and limitations
+- Mark TODO items clearly
+
+---
+
+## Justfile Recipe Requirements
+
+**MANDATORY: All recipes with parameters MUST have defaults:**
+- Use `{{PARAM}}` syntax for just parameter substitution
+- Provide sensible default values: `RECIPE PARAM="default_value":`
+- Never use empty defaults (`""`) - always provide actual default values
+- Read from `configuration.nix` if available, but work without it
+- Example: `download-model MODEL_DIR="./models":` (has default)
+
+**MANDATORY: Recipe structure:**
+```bash
+recipe-name PARAM="default":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    # Source libraries (use bootstrap.sh for centralized loading)
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Get config (override with parameter if provided)
+    PARAM_VALUE="{{PARAM}}"
+    CONFIG_VALUE=$(get_config "config.key" "$PARAM_VALUE")
+    [ "$PARAM_VALUE" != "default" ] || PARAM_VALUE="$CONFIG_VALUE"
+    
+    # Validate
+    validate_required "PARAM" "$PARAM_VALUE"
+    
+    # Check idempotency
+    if is_already_done; then
+        log_info "Already done, skipping"
+        exit 0
+    fi
+    
+    # Main logic
+    log_info "Doing something..."
+    # ... operation ...
+    log_success "Done!"
+```
+
+**MANDATORY: Library usage:**
+- Always use `lib/bootstrap.sh` to load libraries (centralized loader)
+- Bootstrap.sh automatically finds and loads all libraries from multiple locations
+- Works from any directory (project root, feature directories, system install)
+- Use library functions instead of reimplementing
+- Don't parse config files directly - use `get_config`
+- Don't validate manually - use validation helpers
+- Don't check state manually - use idempotency helpers
+
+**This ensures all commands work by default** - Users can call `justdo command` without any parameters and it will work immediately.
+
+---
+
+## Common Pitfalls & Solutions
+
+### Justfile Recipe Anti-Patterns
+
+**❌ WRONG: Parsing Nix files directly**
+```bash
+PORT=$(grep "defaultPort" config.nix | sed 's/.*= \([0-9]*\).*/\1/')
+```
+**✅ CORRECT:**
+```bash
+PORT=$(get_config "ai.localAI.defaultPort" "8080")
+```
+
+**❌ WRONG: No idempotency check**
+```bash
+# Always installs, even if already installed
+apk add nix
+```
+**✅ CORRECT:**
+```bash
+if is_installed nix; then
+    log_info "Nix already installed, skipping"
+    exit 0
+fi
+apk add nix
+```
+
+**❌ WRONG: No error handling**
+```bash
+# Fails silently if command doesn't exist
+command --version
+```
+**✅ CORRECT:**
+```bash
+require_command command "just install-command"
+command --version
+```
+
+**❌ WRONG: No validation**
+```bash
+# Uses invalid port
+PORT="99999"
+localai --port "$PORT"
+```
+**✅ CORRECT:**
+```bash
+PORT="99999"
+validate_port "$PORT"  # Dies with error if invalid
+localai --port "$PORT"
+```
+
+**❌ WRONG: Not sourcing libraries**
+```bash
+# Reimplements logging
+echo "INFO: Starting..."
+```
+**✅ CORRECT:**
+```bash
+# Source libraries first
+. "$SCRIPT_DIR/lib/logging.sh"
+log_info "Starting..."
+```
+
+### Library Usage Anti-Patterns
+
+**❌ WRONG: Not using library functions**
+```bash
+# Reimplements config reading
+if [ -f "config.nix" ]; then
+    PORT=$(grep "port" config.nix | ...)
+fi
+```
+**✅ CORRECT:**
+```bash
+PORT=$(get_config "ai.localAI.defaultPort" "8080")
+```
+
+**❌ WRONG: Manual state checking**
+```bash
+# Reimplements port check
+if lsof -Pi :8080 >/dev/null 2>&1; then
+    # running
+fi
+```
+**✅ CORRECT:**
+```bash
+if is_port_in_use "8080"; then
+    # running
+fi
+```
+
+---
+
+## Testing Checklist
+
+Before committing any code, verify:
+
+- [ ] Recipe starts with `set -euo pipefail`
+- [ ] Libraries sourced from `lib/` directory
+- [ ] Config accessed via `get_config` (not grep/sed)
+- [ ] Inputs validated using validation helpers
+- [ ] Idempotency checked before operations
+- [ ] Appropriate timeouts set for long operations
+- [ ] Error messages are clear and actionable
+- [ ] Exit codes are correct (0=success, 1=error)
+- [ ] Command is idempotent (safe to rerun)
+- [ ] Resource cleanup happens on failure
+- [ ] Network operations check availability first
+- [ ] Background processes are tracked and cleaned up
+- [ ] No hardcoded paths (use variables from config)
+- [ ] No silent failures (always report errors)
+
+---
+
+## Core Principles
+
+### Zero-Config Philosophy
+- **Install**: `doas just install` → Everything works immediately
+- **Use**: `justdo` commands → Primary CLI interface
+- **Cleanup**: `doas just cleanup` → Removes everything completely
+
+### Justfile-First Design
+- **`justfile`** = Single source of truth for all operations
+- **`justdo`** = Primary interface for all operations
+- **`just`** = Alternative interface (same commands)
+- **Background services** = Run automatically, lightweight, no manual config
+- **All commands work by default** = No parameters required, sensible defaults for everything
+- **Zero-config defaults** = Every command works immediately without configuration
+- **Optional parameters** = Can override defaults if needed, but not required
+
+### Lean & Mean Code
+- **Every line must earn its place** - no bloat
+- **Shared libraries** - DRY principle, consistent behavior
+- **Type-safe config** - Nix evaluation, no fragile parsing
+- **Minimal dependencies** - only what's essential
+- **Fast execution** - optimized operations, early exits
+
+### Configuration-Driven (But Zero-Config by Default)
+- **`configuration.nix`** = Single source of truth (but has sensible defaults)
+- **Auto-applied** = Configuration applied automatically during install
+- **No manual config needed** = Works out of the box
+- **Just commands** = Read from config if available, but work without it
+- **All commands work by default** = Every `justdo` command has sensible defaults
+- **Default values** = Ports (8080), directories (./models, ./localai-config), etc.
+- **Optional customization** = Edit `configuration.nix` only if you want to customize
+
+## Notes
+
+- **Zero-config**: Everything works after `curl -fsSL https://theblackberets.github.io/install.sh | doas bash` - no manual configuration
+- **Justfile-first**: All operations via justfile recipes (main orchestrator + feature-specific)
+- **Feature-based modular design**: Each feature self-contained in its own directory
+- **All commands work by default**: Every `justdo` command works immediately without parameters
+- **Sensible defaults**: Ports (8080), directories (./models), all settings have defaults
+- **Optional configuration**: `configuration.nix` is optional - commands work without it
+- **Lean code**: Optimized, cached, efficient - every line counts
+- **Shared libraries**: Consistent behavior via `lib/bootstrap.sh` (centralized loader)
+- **Type-safe config**: Nix evaluation, no fragile parsing
+- **Nix daemon management**: Properly started, verified, and optimized before use
+- **Background services**: MCP server runs automatically, lightweight
+- **Complete cleanup**: `doas just cleanup` removes EVERYTHING (two-phase: feature-specific then general)
+- **Idempotent**: All commands safe to rerun (except MCP start - throws error if already running)
+- **Robust**: Comprehensive error handling and validation
+- **Kali installation**: Properly fails on errors (no silent failures)
+- **MCP start**: Throws error if server already running (prevents duplicate instances)
+- **Chat interface**: Automatically checks for MCP server and attempts to start it if missing
+- **Model management**: `models-management/` directory contains justfile (tracked), `models/` directory is gitignored (for downloads)
+- **AI-powered**: LocalAI ready for hacking immediately
+- **Legal**: Only test systems you own/have permission
+- **No Local Debugging**: Cannot debug locally - all development and testing must be done remotely or in production environment

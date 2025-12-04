@@ -1,0 +1,578 @@
+# LocalAI Feature
+# AI server installation and management
+
+# Install LocalAI
+install-localai:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Skip config check if FORCE_INSTALL is set (used by main install recipe)
+    if [ "${FORCE_INSTALL:-0}" != "1" ]; then
+        # Check if enabled (default to enabled if config not found)
+        CONFIG_ENABLED="true"
+        if command -v is_config_enabled >/dev/null 2>&1; then
+            if ! is_config_enabled "ai.localAI.enabled" 2>/dev/null; then
+                CONFIG_ENABLED="false"
+            fi
+        fi
+        
+        if [ "$CONFIG_ENABLED" = "false" ]; then
+            log_info "LocalAI disabled in config, skipping"
+            exit 0
+        fi
+    fi
+    
+    log_info "Installing/updating LocalAI..."
+    
+    # Check if LocalAI is currently running
+    PORT=$(get_config "ai.localAI.defaultPort" "8080")
+    WAS_RUNNING="false"
+    if is_port_in_use "$PORT"; then
+        PID=$(get_pid_by_port "$PORT")
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            PROC_COMMAND=$(ps -p "$PID" -o comm= 2>/dev/null || echo "")
+            if echo "$PROC_COMMAND" | grep -qi "localai" || pgrep -f "localai" | grep -q "^${PID}$"; then
+                WAS_RUNNING="true"
+                log_info "LocalAI is currently running, will restart after update"
+            fi
+        fi
+    fi
+    
+    # Stop LocalAI if running (will restart after update)
+    if [ "$WAS_RUNNING" = "true" ]; then
+        log_info "Stopping LocalAI before update..."
+        if command -v justdo >/dev/null 2>&1; then
+            justdo stop-localai 2>/dev/null || true
+        else
+            just stop-localai 2>/dev/null || true
+        fi
+        sleep 2
+    fi
+    
+    # Download LocalAI binary - try multiple URLs/versions
+    LOCALAI_BINARY="/usr/local/bin/localai"
+    
+    # Ensure /usr/local/bin exists
+    mkdir -p /usr/local/bin
+    
+    # Try to get actual asset URL from GitHub API first
+    ASSET_URL=""
+    if command -v curl >/dev/null 2>&1 && command -v grep >/dev/null 2>&1; then
+        log_info "Checking for latest LocalAI release..."
+        # Get the browser_download_url for linux-amd64 binary
+        ASSET_URL=$(curl -fsSL "https://api.github.com/repos/mudler/LocalAI/releases/latest" 2>/dev/null | \
+            grep -o '"browser_download_url": "[^"]*linux[^"]*amd64[^"]*"' | \
+            grep -v '\.tar\.gz' | grep -v '\.zip' | \
+            head -n1 | sed -E 's/.*"browser_download_url": "([^"]+)".*/\1/' || echo "")
+        if [ -n "$ASSET_URL" ]; then
+            log_info "Found asset URL from GitHub API"
+        fi
+    fi
+    
+    # Try multiple possible URLs with different filename patterns
+    LOCALAI_URLS=()
+    
+    # Add API-found URL first if available
+    [ -n "$ASSET_URL" ] && LOCALAI_URLS+=("$ASSET_URL")
+    
+    # Try latest redirect and common versions with different filename patterns
+    LOCALAI_URLS+=(
+        "https://github.com/mudler/LocalAI/releases/latest/download/localai-linux-amd64"
+        "https://github.com/mudler/LocalAI/releases/download/v3.8.0/localai-linux-amd64"
+        "https://github.com/mudler/LocalAI/releases/download/v3.7.0/localai-linux-amd64"
+        "https://github.com/mudler/LocalAI/releases/download/v3.6.0/localai-linux-amd64"
+        "https://github.com/mudler/LocalAI/releases/download/v2.17.0/localai-linux-amd64"
+        "https://github.com/mudler/LocalAI/releases/download/v2.16.0/localai-linux-amd64"
+    )
+    
+    # Download with better error handling - try multiple URLs
+    DOWNLOAD_SUCCESS="false"
+    DOWNLOAD_ERROR=""
+    LAST_URL=""
+    
+    for LOCALAI_URL in "${LOCALAI_URLS[@]}"; do
+        LAST_URL="$LOCALAI_URL"
+        log_info "Trying to download LocalAI from: $LOCALAI_URL"
+        
+        if command -v wget >/dev/null 2>&1; then
+            DOWNLOAD_ERROR=$(wget -O "$LOCALAI_BINARY" "$LOCALAI_URL" 2>&1) && DOWNLOAD_SUCCESS="true" || true
+        elif command -v curl >/dev/null 2>&1; then
+            DOWNLOAD_ERROR=$(curl -fL "$LOCALAI_URL" -o "$LOCALAI_BINARY" 2>&1) && DOWNLOAD_SUCCESS="true" || true
+        else
+            log_error "wget or curl required to download LocalAI"
+            exit 1
+        fi
+        
+        if [ "$DOWNLOAD_SUCCESS" = "true" ] && [ -f "$LOCALAI_BINARY" ] && [ -s "$LOCALAI_BINARY" ]; then
+            log_success "Successfully downloaded LocalAI from: $LOCALAI_URL"
+            break
+        else
+            log_warn "Failed to download from: $LOCALAI_URL"
+            [ -f "$LOCALAI_BINARY" ] && rm -f "$LOCALAI_BINARY"
+        fi
+    done
+    
+    if [ "$DOWNLOAD_SUCCESS" != "true" ]; then
+        log_error "Failed to download LocalAI binary from all attempted URLs"
+        log_info "Last attempted URL: $LAST_URL"
+        [ -n "$DOWNLOAD_ERROR" ] && log_error "Last error: $DOWNLOAD_ERROR"
+        log_info ""
+        log_info "LocalAI installation failed. Options:"
+        log_info "1. Check releases page for correct URL: https://github.com/mudler/LocalAI/releases"
+        log_info "2. Download manually and place in /usr/local/bin/localai"
+        log_info "3. Use Docker: docker run -d -p 8080:8080 --name localai localai/localai:latest"
+        log_info "4. Install via Go: go install github.com/mudler/LocalAI/cmd/localai@latest"
+        log_info ""
+        log_info "Note: LocalAI is optional. Chat and other features will work once LocalAI is available."
+        exit 1
+    fi
+    
+    # Verify binary was downloaded
+    if [ ! -f "$LOCALAI_BINARY" ]; then
+        log_error "LocalAI binary not found at $LOCALAI_BINARY"
+        exit 1
+    fi
+    
+    # Make executable
+    chmod +x "$LOCALAI_BINARY"
+    
+    # Verify it's executable and in PATH
+    if [ -x "$LOCALAI_BINARY" ] && command -v localai >/dev/null 2>&1; then
+        log_success "LocalAI installed/updated successfully"
+    else
+        log_warn "LocalAI binary installed but may not be in PATH"
+        log_info "Binary location: $LOCALAI_BINARY"
+        log_info "You may need to restart your shell or run: export PATH=\"/usr/local/bin:\$PATH\""
+    fi
+    
+    # Restart LocalAI if it was running before update
+    if [ "$WAS_RUNNING" = "true" ]; then
+        log_info "Restarting LocalAI after update..."
+        if command -v justdo >/dev/null 2>&1; then
+            justdo start-localai || log_warn "Failed to restart LocalAI automatically. Start it manually with: justdo start-localai"
+        else
+            just start-localai || log_warn "Failed to restart LocalAI automatically. Start it manually with: justdo start-localai"
+        fi
+    fi
+
+# Start LocalAI server (feature-specific)
+start-localai:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    PORT=$(get_config "ai.localAI.defaultPort" "8080")
+    CONFIG_DIR=$(get_config "ai.localAI.configDir" "./localai-config")
+    
+    validate_port "$PORT"
+    
+    # Check if LocalAI is installed, try to install if not
+    if ! command -v localai >/dev/null 2>&1; then
+        log_warn "LocalAI not found, attempting to install..."
+        if just install-localai 2>&1; then
+            log_success "LocalAI installed successfully"
+        else
+            log_error "Failed to install LocalAI automatically"
+            log_info "You can try installing manually:"
+            log_info "  1. Check releases: https://github.com/mudler/LocalAI/releases"
+            log_info "  2. Download binary and place in /usr/local/bin/localai"
+            log_info "  3. Or use Docker: docker run -p 8080:8080 localai/localai"
+            die "LocalAI is required but not installed. Install it first: just install-localai"
+        fi
+    fi
+    
+    # Check if already running on the correct port
+    if is_port_in_use "$PORT"; then
+        PID=$(get_pid_by_port "$PORT")
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            # Verify it's actually LocalAI by checking process command
+            PROC_COMMAND=$(ps -p "$PID" -o comm= 2>/dev/null || echo "")
+            if echo "$PROC_COMMAND" | grep -qi "localai" || pgrep -f "localai" | grep -q "^${PID}$"; then
+                log_info "LocalAI already running on port $PORT (PID: $PID)"
+                exit 0
+            else
+                log_warn "Port $PORT is in use by different process (PID: $PID, command: ${PROC_COMMAND:-unknown})"
+            fi
+        else
+            log_warn "Port $PORT appears to be in use but no valid process found"
+        fi
+    fi
+    
+    # Only kill LocalAI processes if port is not in use or wrong process
+    if ! is_port_in_use "$PORT"; then
+        EXISTING_PIDS=$(pgrep -f "localai" 2>/dev/null || echo "")
+        if [ -n "$EXISTING_PIDS" ]; then
+            log_info "Stopping existing LocalAI processes (port not in use)..."
+            echo "$EXISTING_PIDS" | xargs kill 2>/dev/null || true
+            sleep 2
+            # Force kill if still running
+            EXISTING_PIDS=$(pgrep -f "localai" 2>/dev/null || echo "")
+            [ -n "$EXISTING_PIDS" ] && echo "$EXISTING_PIDS" | xargs kill -9 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    
+    # Check config - create/update if missing or backend changed (zero-config philosophy)
+    CONFIG_YAML="$CONFIG_DIR/config.yaml"
+    
+    # Get expected backend from config
+    EXPECTED_BACKEND=$(get_config "ai.localAI.config.backend" "llama-cpp")
+    
+    # Check if config needs to be regenerated
+    NEEDS_REGENERATE="false"
+    if [ ! -f "$CONFIG_YAML" ]; then
+        NEEDS_REGENERATE="true"
+        log_info "Config file not found, creating default config..."
+    elif [ -n "$EXPECTED_BACKEND" ]; then
+        # Check if backend in config matches expected backend
+        CURRENT_BACKEND=$(grep -E "^[[:space:]]*backend:" "$CONFIG_YAML" 2>/dev/null | head -1 | sed 's/.*backend:[[:space:]]*\([^[:space:]]*\).*/\1/' || echo "")
+        if [ "$CURRENT_BACKEND" != "$EXPECTED_BACKEND" ]; then
+            NEEDS_REGENERATE="true"
+            log_info "Backend mismatch detected (current: $CURRENT_BACKEND, expected: $EXPECTED_BACKEND), regenerating config..."
+        fi
+    fi
+    
+    if [ "$NEEDS_REGENERATE" = "true" ]; then
+        mkdir -p "$CONFIG_DIR"
+        
+        # Get config values with defaults
+        MODEL_NAME=$(get_config "ai.localAI.config.modelName" "llama-3-8b")
+        MODEL_FILE=$(get_config "ai.localAI.config.modelFile" "")
+        if [ -z "$MODEL_FILE" ]; then
+            MODEL_FILE=$(get_config "ai.localAI.downloadModel.modelName" "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf")
+        fi
+        TEMP=$(get_config "ai.localAI.config.temperature" "0.7")
+        TOP_P=$(get_config "ai.localAI.config.topP" "0.9")
+        TOP_K=$(get_config "ai.localAI.config.topK" "40")
+        THREADS=$(get_config "ai.localAI.config.threads" "4")
+        CONTEXT_SIZE=$(get_config "ai.localAI.config.contextSize" "4096")
+        
+        # Use expected backend (from config or default)
+        BACKEND="${EXPECTED_BACKEND:-llama-cpp}"
+        
+        # Create config.yaml
+        {
+            echo "# LocalAI Configuration (v3.x format)"
+            echo "- name: $MODEL_NAME"
+            echo "  backend: $BACKEND"
+            echo "  parameters:"
+            echo "    model: $MODEL_FILE"
+            echo "    temperature: $TEMP"
+            echo "    top_p: $TOP_P"
+            echo "    top_k: $TOP_K"
+            echo "    threads: $THREADS"
+            echo "    ctx_size: $CONTEXT_SIZE"
+            echo "    f16: true"
+            echo "    stop:"
+            echo "      - \"<|eot_id|>\""
+            echo "      - \"<|end_of_text|>\""
+        } > "$CONFIG_YAML"
+        
+        if [ -f "$CONFIG_YAML" ]; then
+            log_success "Config.yaml created/updated at $CONFIG_YAML (backend: $BACKEND)"
+        else
+            die "Failed to create config.yaml at $CONFIG_YAML"
+        fi
+    fi
+    
+    # Check if backend needs to be installed (for LocalAI v3.8+)
+    if is_installed localai && [ "$EXPECTED_BACKEND" = "llama-cpp" ]; then
+        # Create backends directory if it doesn't exist (required for LocalAI v3.8+)
+        # LocalAI stores installed backends in /root/backends by default
+        BACKENDS_DIR="/root/backends"
+        mkdir -p "$BACKENDS_DIR"
+        
+        # Try to install llama-cpp backend if available
+        log_info "Ensuring llama-cpp backend is installed..."
+        if localai backends install llama-cpp 2>&1 | grep -v "WARNING:" | grep -v "failed to PCI" >/dev/null 2>&1 || [ $? -eq 0 ]; then
+            # Check if installation actually succeeded by verifying backend is available
+            if localai backends list 2>/dev/null | grep -q "localai@llama-cpp"; then
+                log_success "llama-cpp backend installed/verified"
+            else
+                log_info "llama-cpp backend available (installation may have succeeded)"
+            fi
+        else
+            # Installation may have failed, but backend might still be available
+            if localai backends list 2>/dev/null | grep -q "localai@llama-cpp"; then
+                log_info "llama-cpp backend available (may already be installed)"
+            else
+                log_warn "llama-cpp backend installation failed - backend may not be available"
+                log_info "LocalAI will attempt to use llama-cpp backend anyway"
+            fi
+        fi
+    fi
+    
+    # Start
+    log_info "Starting LocalAI on port $PORT..."
+    
+    # Create log file for debugging
+    LOG_FILE="${CONFIG_DIR}/localai.log"
+    mkdir -p "$CONFIG_DIR"
+    
+    # Use models directory from config
+    MODELS_DIR=$(get_config "ai.localAI.modelDir" "./models")
+    
+    # Respect MODEL_DIR environment variable if set (for Docker/testing)
+    if [ -n "${MODEL_DIR:-}" ]; then
+        MODELS_DIR="${MODEL_DIR}"
+    fi
+    
+    # Get model file name from config (prefer config.modelFile, fallback to downloadModel.modelName)
+    # Default matches the actual downloaded filename
+    MODEL_FILE=$(get_config "ai.localAI.config.modelFile" "")
+    if [ -z "$MODEL_FILE" ]; then
+        MODEL_FILE=$(get_config "ai.localAI.downloadModel.modelName" "Meta-Llama-3-8B-Instruct.Q4_K_M.gguf")
+    fi
+    
+    # Create symlink from system install directory to actual model directory if needed
+    # This ensures LocalAI finds models in Docker/testing environments
+    SYSTEM_MODEL_DIR="/usr/local/share/theblackberets/models"
+    if [ -n "${MODEL_DIR:-}" ] && [ -d "$(dirname "$SYSTEM_MODEL_DIR")" ]; then
+        mkdir -p "$(dirname "$SYSTEM_MODEL_DIR")"
+        if [ ! -e "$SYSTEM_MODEL_DIR" ] || [ -L "$SYSTEM_MODEL_DIR" ]; then
+            # Remove existing symlink if broken
+            [ -L "$SYSTEM_MODEL_DIR" ] && rm -f "$SYSTEM_MODEL_DIR" 2>/dev/null || true
+            # Create symlink to actual model directory
+            ln -sf "$MODELS_DIR" "$SYSTEM_MODEL_DIR" 2>/dev/null || true
+        fi
+    fi
+    
+    # Check for model-specific YAML files that might override backend settings
+    # LocalAI v3.x can use per-model YAML files in the models directory
+    MODEL_NAME=$(get_config "ai.localAI.config.modelName" "llama-3-8b")
+    MODEL_YAML="$MODELS_DIR/${MODEL_NAME}.yaml"
+    if [ -f "$MODEL_YAML" ]; then
+        # Check if model-specific YAML has wrong backend
+        MODEL_YAML_BACKEND=$(grep -E "^[[:space:]]*backend:" "$MODEL_YAML" 2>/dev/null | head -1 | sed 's/.*backend:[[:space:]]*\([^[:space:]]*\).*/\1/' || echo "")
+        if [ -n "$MODEL_YAML_BACKEND" ] && [ "$MODEL_YAML_BACKEND" != "$EXPECTED_BACKEND" ]; then
+            log_warn "Model-specific YAML found with backend '$MODEL_YAML_BACKEND', updating to '$EXPECTED_BACKEND'"
+            # Update backend in model-specific YAML
+            if command -v sed >/dev/null 2>&1; then
+                sed -i "s/backend:[[:space:]]*${MODEL_YAML_BACKEND}/backend: ${EXPECTED_BACKEND}/" "$MODEL_YAML" 2>/dev/null || true
+            fi
+        fi
+    fi
+    
+    # Start LocalAI in background with logging
+    # LocalAI v3.x uses --models-path and --config-file differently
+    # Note: Model file must exist in MODELS_DIR for LocalAI to work
+    MODEL_PATH="$MODELS_DIR/$MODEL_FILE"
+    if [ ! -f "$MODEL_PATH" ]; then
+        log_warn "Model file not found: $MODEL_PATH"
+        log_info "LocalAI will start but won't be able to process requests until model is downloaded"
+        log_info "Download model with: justdo download-model"
+    fi
+    
+    nohup localai --config-file "$CONFIG_YAML" --models-path "$MODELS_DIR" --address "0.0.0.0:$PORT" >>"$LOG_FILE" 2>&1 &
+    PID=$!
+    sleep 3
+    
+    # Verify it's actually running
+    if ! kill -0 $PID 2>/dev/null; then
+        log_error "LocalAI process died immediately after start"
+        log_info "Check logs: $LOG_FILE"
+        tail -n 30 "$LOG_FILE" 2>/dev/null || true
+        die "Failed to start LocalAI"
+    fi
+    
+    # Wait a bit more and check if port is actually listening
+    sleep 3
+    if is_port_in_use "$PORT"; then
+        ACTUAL_PID=$(get_pid_by_port "$PORT")
+        if [ -n "$ACTUAL_PID" ] && [ "$ACTUAL_PID" = "$PID" ]; then
+            log_success "LocalAI started successfully (PID: $PID, Port: $PORT)"
+            log_info "API: http://localhost:$PORT"
+            log_info "Logs: $LOG_FILE"
+            if [ ! -f "$MODEL_PATH" ]; then
+                log_warn "Model file not found - download with: justdo download-model"
+            fi
+        else
+            log_warn "LocalAI started but port check shows different PID"
+            log_info "Process PID: $PID, Port PID: ${ACTUAL_PID:-none}"
+            log_info "LocalAI may still be starting up..."
+        fi
+    else
+        log_warn "LocalAI process running (PID: $PID) but port $PORT not listening yet"
+        log_info "It may still be starting up. Check logs: $LOG_FILE"
+        log_info "You can check status with: justdo status"
+    fi
+
+# Stop LocalAI server (feature-specific)
+stop-localai:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    PORT=$(get_config "ai.localAI.defaultPort" "8080")
+    validate_port "$PORT"
+    
+    PID=$(get_pid_by_port "$PORT")
+    if [ -n "$PID" ]; then
+        kill "$PID" 2>/dev/null && log_success "LocalAI stopped (PID: $PID)" || log_warn "Failed to stop LocalAI"
+    else
+        log_info "LocalAI not running on port $PORT"
+    fi
+
+# Test LocalAI (feature-specific)
+test-localai:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    if [ -f test.sh ]; then
+        bash test.sh
+    else
+        log_warn "LocalAI test script not found"
+        exit 0
+    fi
+
+# Chat interface (legacy - use main chat command)
+chat-legacy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Find chat.py script (check multiple locations)
+    CHAT_SCRIPT=""
+    for path in "./chat.py" "../localai/chat.py" "/usr/local/share/theblackberets/chat.py" "/usr/local/bin/chat.py"; do
+        if [ -f "$path" ]; then
+            CHAT_SCRIPT="$path"
+            break
+        fi
+    done
+    
+    if [ -z "$CHAT_SCRIPT" ]; then
+        die "chat.py not found. Make sure it's in the localai/ directory or run: just install"
+    fi
+    
+    # Check Python first (before trying to start services)
+    require_command python3 "Install Python 3: apk add python3"
+    
+    # Check if LocalAI is running
+    PORT=$(get_config "ai.localAI.defaultPort" "8080")
+    if ! is_port_in_use "$PORT"; then
+        log_warn "LocalAI is not running on port $PORT"
+        log_info "Start it with: justdo start"
+        log_info "Attempting to start LocalAI..."
+        just start-localai || log_warn "Failed to start LocalAI automatically. Start it manually with: justdo start-localai"
+        sleep 3
+    fi
+    
+    # Run chat script (it will check connection itself)
+    exec python3 "$CHAT_SCRIPT"
+
+# Cleanup LocalAI (feature-specific)
+cleanup-localai:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Cleaning up LocalAI..."
+    
+    # Stop LocalAI first
+    just stop-localai 2>/dev/null || true
+    
+    # Kill any remaining processes
+    pkill -f "localai" 2>/dev/null || true
+    
+    # Remove binary
+    rm -f /usr/local/bin/localai 2>/dev/null || true
+    
+    # Remove config and model directories (optional - user data)
+    # Uncomment if you want to remove user data too:
+    # rm -rf ./localai-config 2>/dev/null || true
+    # rm -rf ./models 2>/dev/null || true
+    
+    log_success "LocalAI cleanup completed"
+

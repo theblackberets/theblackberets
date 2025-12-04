@@ -1,0 +1,40 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+LICENSE
+.cursorrules
+
+# Build artifacts
+*.pyc
+__pycache__
+*.pyo
+*.pyd
+.Python
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test.sh
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+

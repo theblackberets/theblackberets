@@ -1,0 +1,84 @@
+# Service Management Feature
+# Status checking and service orchestration
+
+# Check status of all services (feature-specific)
+status-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "=========================================="
+    log_info "The Black Berets - Service Status"
+    log_info "=========================================="
+    log_info ""
+    
+    # Nix
+    if is_installed nix; then
+        if is_nix_daemon_running; then
+            log_success "Nix: Installed and running"
+        else
+            log_warn "Nix: Installed but daemon not running"
+        fi
+    else
+        log_fail "Nix: Not installed"
+    fi
+    
+    # just
+    if is_installed just; then
+        log_success "just: Installed"
+    else
+        log_fail "just: Not installed"
+    fi
+    
+    # LocalAI
+    PORT=$(get_config "ai.localAI.defaultPort" "8080")
+    if is_installed localai; then
+        if is_port_in_use "$PORT"; then
+            PID=$(get_pid_by_port "$PORT")
+            if [ -n "$PID" ]; then
+                log_success "LocalAI: Running on port $PORT (PID: $PID)"
+            else
+                log_success "LocalAI: Running on port $PORT (PID: unknown)"
+            fi
+        else
+            log_info "LocalAI: Installed but not running"
+        fi
+    else
+        log_fail "LocalAI: Not installed"
+    fi
+    
+    # MCP server
+    if is_service_running "mcp-kali-server.py"; then
+        PID=$(pgrep -f "mcp-kali-server.py" | head -n1)
+        log_success "MCP server: Running (PID: $PID)"
+    else
+        log_info "MCP server: Not running"
+    fi
+    
+    # Kali tools
+    KALI_TOOLS=("nmap" "sqlmap" "hashcat" "john" "aircrack-ng")
+    TOOLS_FOUND=0
+    for tool in "${KALI_TOOLS[@]}"; do
+        is_installed "$tool" && TOOLS_FOUND=$((TOOLS_FOUND + 1))
+    done
+    if [ "$TOOLS_FOUND" -gt 0 ]; then
+        log_success "Kali tools: $TOOLS_FOUND/${#KALI_TOOLS[@]} installed"
+    else
+        log_warn "Kali tools: Not installed"
+    fi
+

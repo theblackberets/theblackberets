@@ -1,0 +1,344 @@
+# MCP Server Feature
+# Model Context Protocol server installation and management
+
+# Install MCP server
+install-mcp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    # Skip config check if FORCE_INSTALL is set (used by main install recipe)
+    if [ "${FORCE_INSTALL:-0}" != "1" ]; then
+        # Check if enabled (default to enabled if config not found)
+        CONFIG_ENABLED="true"
+        if command -v is_config_enabled >/dev/null 2>&1; then
+            if ! is_config_enabled "mcp.enabled" 2>/dev/null; then
+                CONFIG_ENABLED="false"
+            fi
+        fi
+        
+        if [ "$CONFIG_ENABLED" = "false" ]; then
+            log_info "MCP server disabled in config, skipping"
+            exit 0
+        fi
+    fi
+    
+    log_info "Installing MCP server..."
+    
+    # Find MCP server script (check multiple locations)
+    MCP_SCRIPT=""
+    for path in "./mcp-kali-server.py" "../mcp/mcp-kali-server.py" "/usr/local/share/theblackberets/mcp-kali-server.py" "/root/project/mcp-kali-server.py"; do
+        [ -f "$path" ] && MCP_SCRIPT="$path" && break
+    done
+    
+    if [ -z "$MCP_SCRIPT" ]; then
+        log_warn "mcp-kali-server.py not found, skipping MCP server installation"
+        log_info "MCP server can be installed later when mcp-kali-server.py is available"
+        exit 0
+    fi
+    
+    # Ensure Python 3 is installed (required for MCP server)
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_info "Installing Python 3 (required for MCP server)..."
+        if command -v apk >/dev/null 2>&1; then
+            apk add --no-cache python3 >/dev/null 2>&1 || log_warn "Failed to install Python 3"
+        fi
+    fi
+    
+    # Copy to system locations (both root and mcp/ subdirectory for consistency)
+    SYSTEM_MCP_DIR="/usr/local/share/theblackberets"
+    mkdir -p "$SYSTEM_MCP_DIR"
+    mkdir -p "$SYSTEM_MCP_DIR/mcp"
+    
+    # Copy to root location
+    cp "$MCP_SCRIPT" "$SYSTEM_MCP_DIR/mcp-kali-server.py"
+    chmod +x "$SYSTEM_MCP_DIR/mcp-kali-server.py"
+    
+    # Also copy to mcp/ subdirectory (for consistency with feature directory structure)
+    cp "$MCP_SCRIPT" "$SYSTEM_MCP_DIR/mcp/mcp-kali-server.py"
+    chmod +x "$SYSTEM_MCP_DIR/mcp/mcp-kali-server.py"
+    
+    # Create symlink
+    mkdir -p /usr/local/bin
+    ln -sf "$SYSTEM_MCP_DIR/mcp-kali-server.py" /usr/local/bin/mcp-kali-server
+    
+    log_success "MCP server installed at: $SYSTEM_MCP_DIR/mcp-kali-server.py"
+
+# Start MCP server (feature-specific)
+start-mcp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    require_command python3 "apk add python3"
+    
+    # Find MCP script (check multiple locations including feature directories)
+    MCP_SCRIPT=""
+    
+    # Check relative paths first
+    for path in "./mcp-kali-server.py" "../mcp/mcp-kali-server.py" "./mcp/mcp-kali-server.py"; do
+        if [ -f "$path" ]; then
+            MCP_SCRIPT="$path"
+            break
+        fi
+    done
+    
+    # Check system locations
+    if [ -z "$MCP_SCRIPT" ]; then
+        for path in "/usr/local/bin/mcp-kali-server" "/usr/local/share/theblackberets/mcp-kali-server.py" "/usr/local/share/theblackberets/mcp/mcp-kali-server.py"; do
+            if [ -f "$path" ]; then
+                MCP_SCRIPT="$path"
+                break
+            fi
+        done
+    fi
+    
+    # Try to find project root and check mcp/ directory
+    if [ -z "$MCP_SCRIPT" ]; then
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/mcp/mcp-kali-server.py" ]; then
+                MCP_SCRIPT="$CURRENT_DIR/mcp/mcp-kali-server.py"
+                break
+            elif [ -f "$CURRENT_DIR/mcp-kali-server.py" ]; then
+                MCP_SCRIPT="$CURRENT_DIR/mcp-kali-server.py"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    if [ -z "$MCP_SCRIPT" ] || [ ! -f "$MCP_SCRIPT" ]; then
+        log_error "MCP server script not found"
+        log_info "Searched locations:"
+        log_info "  - ./mcp-kali-server.py"
+        log_info "  - ../mcp/mcp-kali-server.py"
+        log_info "  - ./mcp/mcp-kali-server.py"
+        log_info "  - /usr/local/bin/mcp-kali-server"
+        log_info "  - /usr/local/share/theblackberets/mcp-kali-server.py"
+        log_info "  - /usr/local/share/theblackberets/mcp/mcp-kali-server.py"
+        log_info ""
+        log_info "Install MCP server with: justdo install-mcp"
+        die "MCP server script not found. Run 'justdo install-mcp' first."
+    fi
+    
+    log_info "Found MCP script at: $MCP_SCRIPT"
+    
+    # Check if already running - throw error if server is available
+    if is_service_running "mcp-kali-server.py"; then
+        PID=$(pgrep -f "mcp-kali-server.py" | head -n1)
+        log_error "MCP server is already running (PID: $PID)"
+        log_info "Stop it first with: justdo stop-mcp"
+        die "MCP server is already running. Stop it first with: justdo stop-mcp"
+    fi
+    
+    # Create log directory if it doesn't exist
+    LOG_DIR="./mcp-logs"
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/mcp-server.log"
+    FIFO_FILE="$LOG_DIR/mcp-server.stdin"
+    
+    # Clean up any existing FIFO
+    rm -f "$FIFO_FILE"
+    
+    # Create named pipe (FIFO) for stdin - keeps stdin open for MCP server
+    if ! mkfifo "$FIFO_FILE" 2>/dev/null; then
+        log_error "Failed to create FIFO: $FIFO_FILE"
+        die "Failed to create stdin FIFO for MCP server"
+    fi
+    
+    # Keep FIFO open by keeping a writer process alive (prevents EOF on stdin)
+    # Start this FIRST so it's ready when Python opens the FIFO for reading
+    # This process opens FIFO for writing (blocks until reader opens it), then keeps it open
+    ( exec 3>"$FIFO_FILE"; while true; do sleep 3600; done ) &
+    FIFO_KEEPER=$!
+    
+    # Small delay to ensure FIFO_KEEPER is ready
+    sleep 0.5
+    
+    # Start MCP server with FIFO as stdin (keeps stdin open, server waits for JSON-RPC input)
+    # Python opens FIFO for reading, which unblocks FIFO_KEEPER, then both keep the pipe open
+    nohup sh -c "python3 \"$MCP_SCRIPT\" < \"$FIFO_FILE\"" >"$LOG_FILE" 2>&1 &
+    PID=$!
+    
+    sleep 2
+    
+    # Check if process is still running
+    if ! kill -0 $PID 2>/dev/null; then
+        kill $FIFO_KEEPER 2>/dev/null || true
+        rm -f "$FIFO_FILE"
+        log_error "MCP server process exited immediately"
+        if [ -f "$LOG_FILE" ]; then
+            log_error "Last log entries:"
+            tail -n 20 "$LOG_FILE" | while IFS= read -r line; do
+                log_error "  $line"
+            done || true
+        fi
+        die "Failed to start MCP server (process exited). Check logs at: $LOG_FILE"
+    fi
+    
+    # Verify it's actually the MCP server process
+    if is_service_running "mcp-kali-server.py"; then
+        ACTUAL_PID=$(pgrep -f "mcp-kali-server.py" | head -n1)
+        log_success "MCP server started (PID: $ACTUAL_PID)"
+        log_info "Logs: $LOG_FILE"
+        log_info "Stdin FIFO: $FIFO_FILE (kept open by PID: $FIFO_KEEPER)"
+    else
+        kill $FIFO_KEEPER 2>/dev/null || true
+        rm -f "$FIFO_FILE"
+        log_error "MCP server process started but not found running"
+        if [ -f "$LOG_FILE" ]; then
+            log_error "Last log entries:"
+            tail -n 20 "$LOG_FILE" | while IFS= read -r line; do
+                log_error "  $line"
+            done || true
+        fi
+        die "Failed to start MCP server (process not found). Check logs at: $LOG_FILE"
+    fi
+
+# Stop MCP server (feature-specific)
+stop-mcp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    PID=$(pgrep -f "mcp-kali-server.py" 2>/dev/null | head -n1 || echo "")
+    if [ -n "$PID" ]; then
+        kill "$PID" 2>/dev/null && log_success "MCP server stopped (PID: $PID)" || log_warn "Failed to stop MCP server"
+    else
+        log_info "MCP server not running"
+    fi
+    
+    # Clean up FIFO keeper processes (processes that keep stdin FIFO open)
+    LOG_DIR="./mcp-logs"
+    FIFO_FILE="$LOG_DIR/mcp-server.stdin"
+    if [ -p "$FIFO_FILE" ] || [ -f "$FIFO_FILE" ]; then
+        # Find processes that have the FIFO open
+        FIFO_KEEPERS=""
+        if command -v lsof >/dev/null 2>&1; then
+            FIFO_KEEPERS=$(lsof "$FIFO_FILE" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u || echo "")
+        fi
+        
+        # Also try to find processes that might be keeping the FIFO open (processes with exec and sleep)
+        # This is a fallback if lsof is not available
+        if [ -z "$FIFO_KEEPERS" ]; then
+            # Look for processes that match the pattern of our FIFO keeper
+            FIFO_KEEPERS=$(pgrep -f "exec 3>.*mcp-server.stdin" 2>/dev/null || echo "")
+        fi
+        
+        if [ -n "$FIFO_KEEPERS" ]; then
+            for keeper_pid in $FIFO_KEEPERS; do
+                kill "$keeper_pid" 2>/dev/null || true
+            done
+        fi
+        rm -f "$FIFO_FILE"
+    fi
+
+# Test MCP server (feature-specific)
+test-mcp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    if [ -f test.sh ]; then
+        bash test.sh
+    else
+        log_warn "MCP test script not found"
+        exit 0
+    fi
+
+# Cleanup MCP server (feature-specific)
+cleanup-mcp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find and load bootstrap (works from any directory)
+    if [ -f lib/bootstrap.sh ]; then
+        . lib/bootstrap.sh
+    elif [ -f ../lib/bootstrap.sh ]; then
+        . ../lib/bootstrap.sh
+    else
+        # Try to find lib directory
+        CURRENT_DIR="$(pwd)"
+        while [ "$CURRENT_DIR" != "/" ]; do
+            if [ -f "$CURRENT_DIR/lib/bootstrap.sh" ]; then
+                . "$CURRENT_DIR/lib/bootstrap.sh"
+                break
+            fi
+            CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+        done
+    fi
+    
+    log_info "Cleaning up MCP server..."
+    
+    # Stop MCP server first
+    just stop-mcp 2>/dev/null || true
+    
+    # Kill any remaining processes
+    pkill -f "mcp-kali-server.py" 2>/dev/null || true
+    
+    # Remove binary and script
+    rm -f /usr/local/bin/mcp-kali-server 2>/dev/null || true
+    rm -f /usr/local/share/theblackberets/mcp-kali-server.py 2>/dev/null || true
+    
+    log_success "MCP server cleanup completed"
+
