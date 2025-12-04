@@ -390,8 +390,123 @@ rm -rf /var/cache/fontconfig 2>/dev/null || true
 log "UI directory cleanup complete."
 log ""
 
-## STEP 7: Clean up just and Nix
-log "## Step 7/8: Cleaning up just and Nix..."
+## STEP 7: Clean up Kali tools and cool terminal tools
+log "## Step 7/9: Cleaning up Kali tools and cool terminal tools..."
+
+# Remove Kali tools symlinks from /usr/local/bin
+log "  -> Removing Kali tools symlinks..."
+KALI_TOOLS=(
+    "nmap"
+    "sqlmap"
+    "john"
+    "hashcat"
+    "aircrack-ng"
+    "tcpdump"
+    "nc"
+    "netcat"
+    "nikto"
+    "gobuster"
+    "exploitdb"
+    "binwalk"
+    "radare2"
+    "gdb"
+    "strace"
+    "ettercap"
+    "crackmapexec"
+)
+
+KALI_REMOVED_COUNT=0
+for tool in "${KALI_TOOLS[@]}"; do
+    if [ -L "/usr/local/bin/$tool" ] || [ -f "/usr/local/bin/$tool" ]; then
+        # Check if it's a symlink to Nix store (our installation)
+        if [ -L "/usr/local/bin/$tool" ]; then
+            LINK_TARGET=$(readlink -f "/usr/local/bin/$tool" 2>/dev/null || true)
+            if [[ "$LINK_TARGET" == /nix/store/* ]] || [[ "$LINK_TARGET" == /tmp/* ]]; then
+                rm -f "/usr/local/bin/$tool" 2>/dev/null && KALI_REMOVED_COUNT=$((KALI_REMOVED_COUNT + 1)) || true
+            fi
+        fi
+    fi
+done
+
+if [ "$KALI_REMOVED_COUNT" -gt 0 ]; then
+    log "  ✓ Removed $KALI_REMOVED_COUNT Kali tool symlinks"
+else
+    log "  -> No Kali tool symlinks found to remove"
+fi
+
+# Remove cool terminal tool symlinks from /usr/local/bin
+log "  -> Removing cool terminal tool symlinks..."
+COOL_TERMINAL_TOOLS=(
+    "starship"
+    "bat"
+    "exa"
+    "fd"
+    "rg"
+    "ripgrep"
+    "fzf"
+    "tmux"
+    "zsh"
+    "htop"
+    "neofetch"
+    "jq"
+    "yq"
+)
+
+COOL_REMOVED_COUNT=0
+for tool in "${COOL_TERMINAL_TOOLS[@]}"; do
+    if [ -L "/usr/local/bin/$tool" ] || [ -f "/usr/local/bin/$tool" ]; then
+        # Check if it's a symlink to Nix store (our installation)
+        if [ -L "/usr/local/bin/$tool" ]; then
+            LINK_TARGET=$(readlink -f "/usr/local/bin/$tool" 2>/dev/null || true)
+            if [[ "$LINK_TARGET" == /nix/store/* ]] || [[ "$LINK_TARGET" == /tmp/* ]]; then
+                rm -f "/usr/local/bin/$tool" 2>/dev/null && COOL_REMOVED_COUNT=$((COOL_REMOVED_COUNT + 1)) || true
+            fi
+        fi
+    fi
+done
+
+if [ "$COOL_REMOVED_COUNT" -gt 0 ]; then
+    log "  ✓ Removed $COOL_REMOVED_COUNT cool terminal tool symlinks"
+else
+    log "  -> No cool terminal tool symlinks found to remove"
+fi
+
+# Remove Starship configuration
+log "  -> Removing Starship configuration..."
+rm -rf /etc/starship 2>/dev/null || true
+log "  ✓ Starship configuration removed"
+
+# Remove zsh configuration
+log "  -> Removing zsh configuration..."
+rm -rf /etc/zsh 2>/dev/null || true
+log "  ✓ Zsh configuration removed"
+
+# Remove Kali tools and cool terminal tools from Nix profile if installed via Nix
+if command -v nix >/dev/null 2>&1; then
+    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+    fi
+    
+    # Remove kali-tools from Nix profile
+    if nix profile list 2>/dev/null | grep -q "kali-tools"; then
+        log "  -> Removing kali-tools from Nix profile..."
+        nix profile remove $(nix profile list 2>/dev/null | grep "kali-tools" | awk '{print $1}') >/dev/null 2>&1 || true
+        log "  ✓ kali-tools removed from Nix profile"
+    fi
+    
+    # Remove cool-terminal from Nix profile
+    if nix profile list 2>/dev/null | grep -q "cool-terminal"; then
+        log "  -> Removing cool-terminal from Nix profile..."
+        nix profile remove $(nix profile list 2>/dev/null | grep "cool-terminal" | awk '{print $1}') >/dev/null 2>&1 || true
+        log "  ✓ cool-terminal removed from Nix profile"
+    fi
+fi
+
+log "Kali tools and cool terminal tools cleanup complete."
+log ""
+
+## STEP 8: Clean up just and Nix
+log "## Step 8/9: Cleaning up just and Nix..."
 
 # Remove just command runner
 log "  -> Removing just command runner..."
@@ -469,6 +584,15 @@ rm -f /usr/local/bin/LOCAL_AI 2>/dev/null || true
 rm -f /etc/profile.d/just-alias.sh 2>/dev/null || true
 rm -f /etc/profile.d/theblackberets-bashrc.sh 2>/dev/null || true
 rm -f /usr/local/bin/update-user-bashrc 2>/dev/null || true
+
+# Remove Starship initialization from bashrc config (if present)
+if [ -f /etc/profile.d/theblackberets-bashrc.sh ]; then
+    # Remove Starship init section
+    sed -i '/# Initialize Starship prompt/,/^fi$/d' /etc/profile.d/theblackberets-bashrc.sh 2>/dev/null || true
+    # Remove modern CLI aliases section
+    sed -i '/# Modern CLI aliases/,/^fi$/d' /etc/profile.d/theblackberets-bashrc.sh 2>/dev/null || true
+fi
+
 log "  ✓ Wrapper scripts and aliases removed"
 
 # Remove bashrc configuration from system files
@@ -487,8 +611,8 @@ fi
 log "just and Nix cleanup complete."
 log ""
 
-## STEP 8: Final system cleanup
-log "## Step 8/8: Final system cleanup..."
+## STEP 9: Final system cleanup
+log "## Step 9/9: Final system cleanup..."
 
 # Clean up any remaining temporary files
 log "  -> Cleaning remaining temporary files..."
@@ -538,6 +662,7 @@ log "✓ Orphaned dependencies cleaned"
 log "✓ Temporary files and caches cleaned"
 log "✓ UI directories and configs removed"
 log "✓ Log files cleaned"
+log "✓ Cool terminal tools removed"
 log "✓ just command runner removed"
 log "✓ Nix package manager removed"
 log ""

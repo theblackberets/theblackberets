@@ -437,6 +437,256 @@ install-kali-tools:
     echo "Available tools: nmap, sqlmap, john, hashcat, aircrack-ng, and more"
     echo "Run: nix profile list to see installed packages"
 
+# Install Kali tools globally (NixOS-style) - makes tools available system-wide
+# Mimics NixOS environment.systemPackages behavior
+install-kali-tools-global:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=========================================="
+    echo "Installing Kali tools globally (NixOS-style)"
+    echo "Tools will be available system-wide like NixOS"
+    echo "=========================================="
+    
+    # Enable Nix commands
+    [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ] && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh || true
+    [ -f /etc/profile.d/nix.sh ] && . /etc/profile.d/nix.sh || true
+    
+    if ! command -v nix >/dev/null 2>&1; then
+        echo "ERROR: Nix is not installed. Please run: doas ./install.sh"
+        exit 1
+    fi
+    
+    # Enable flakes if needed
+    if ! nix show-config 2>/dev/null | grep -q "experimental-features.*flakes"; then
+        mkdir -p /etc/nix
+        echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf 2>/dev/null || true
+    fi
+    
+    # Determine flake location
+    FLAKE_DIR=""
+    FLAKE_REF=""
+    if [ -f "flake.nix" ]; then
+        FLAKE_DIR="."
+        FLAKE_REF=".#kali-tools"
+        echo "Using local flake.nix"
+    else
+        SITE_URL="https://theblackberets.github.io"
+        if command -v wget >/dev/null 2>&1; then
+            wget -qO /tmp/flake.nix "$SITE_URL/flake.nix" 2>/dev/null && FLAKE_REF="/tmp#kali-tools" && FLAKE_DIR="/tmp"
+        elif command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$SITE_URL/flake.nix" -o /tmp/flake.nix 2>/dev/null && FLAKE_REF="/tmp#kali-tools" && FLAKE_DIR="/tmp"
+        else
+            echo "ERROR: Need wget or curl to download flake.nix"
+            exit 1
+        fi
+    fi
+    
+    echo ""
+    echo "Method 1: Installing via nix-env (NixOS-style, user-level)..."
+    
+    # Build the package and install via nix-env
+    # This makes tools available globally for the current user
+    if nix build "$FLAKE_REF" --out-link /tmp/kali-tools-result 2>/dev/null; then
+        echo "✓ Package built successfully"
+        
+        # Install all binaries from the built package
+        KALI_TOOLS_PATH="/tmp/kali-tools-result"
+        if [ -d "$KALI_TOOLS_PATH/bin" ]; then
+            echo "Installing tools globally..."
+            
+            # Create symlinks in /usr/local/bin (requires root)
+            if [ "$(id -u)" = "0" ]; then
+                INSTALLED_COUNT=0
+                for tool in "$KALI_TOOLS_PATH/bin"/*; do
+                    if [ -f "$tool" ] && [ -x "$tool" ]; then
+                        TOOL_NAME=$(basename "$tool")
+                        if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME")" != "$(readlink -f "$tool")" ]; then
+                            ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
+                            INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+                        fi
+                    fi
+                done
+                echo "✓ Installed $INSTALLED_COUNT tools to /usr/local/bin (system-wide)"
+            else
+                # For non-root users, install via nix profile (works with flakes)
+                echo "Installing to user profile (nix profile)..."
+                if nix profile install "$FLAKE_REF" 2>/dev/null; then
+                    echo "✓ Tools installed to user profile"
+                    echo "  Tools are available via Nix profile PATH"
+                else
+                    echo "WARNING: nix profile installation failed"
+                    echo "Consider running with: doas just install-kali-tools-global"
+                    echo "Or use: just install-kali-tools (standard method)"
+                fi
+            fi
+        else
+            echo "WARNING: Built package doesn't have bin directory"
+        fi
+        
+        # Cleanup
+        rm -rf /tmp/kali-tools-result 2>/dev/null || true
+    else
+        echo "WARNING: Failed to build package, falling back to nix profile installation..."
+        
+        # Fallback: Use standard nix profile install
+        if nix profile install "$FLAKE_REF" 2>/dev/null; then
+            echo "✓ Installed tools via nix profile"
+            if [ "$(id -u)" = "0" ]; then
+                echo "  Note: For system-wide installation, tools should be in Nix profile PATH"
+                echo "  To make tools available in /usr/local/bin, run this command again after build succeeds"
+            fi
+        else
+            echo "ERROR: Failed to install tools. Try: just install-kali-tools"
+            exit 1
+        fi
+    fi
+    
+    echo ""
+    echo "=========================================="
+    echo "Global installation completed!"
+    echo "=========================================="
+    echo ""
+    echo "Tools are now available system-wide:"
+    echo "  - If installed as root: Available in /usr/local/bin (system-wide)"
+    echo "  - If installed as user: Available via Nix profile PATH"
+    echo ""
+    echo "Verify installation:"
+    echo "  which nmap"
+    echo "  nmap --version"
+    echo ""
+    echo "Note: You may need to restart your shell or run:"
+    echo "  source /etc/profile.d/nix.sh"
+
+# Install cool terminal tools globally (NixOS-style) - modern CLI replacements
+# Includes: starship, bat, exa, fd, ripgrep, fzf, tmux, zsh, and more
+install-cool-terminal-global:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=========================================="
+    echo "Installing cool terminal tools globally (NixOS-style)"
+    echo "Modern CLI replacements and enhancements"
+    echo "=========================================="
+    
+    # Enable Nix commands
+    [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ] && . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh || true
+    [ -f /etc/profile.d/nix.sh ] && . /etc/profile.d/nix.sh || true
+    
+    if ! command -v nix >/dev/null 2>&1; then
+        echo "ERROR: Nix is not installed. Please run: doas ./install.sh"
+        exit 1
+    fi
+    
+    # Enable flakes if needed
+    if ! nix show-config 2>/dev/null | grep -q "experimental-features.*flakes"; then
+        mkdir -p /etc/nix
+        echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf 2>/dev/null || true
+    fi
+    
+    # Determine flake location
+    FLAKE_DIR=""
+    FLAKE_REF=""
+    if [ -f "flake.nix" ]; then
+        FLAKE_DIR="."
+        FLAKE_REF=".#cool-terminal"
+        echo "Using local flake.nix"
+    else
+        SITE_URL="https://theblackberets.github.io"
+        if command -v wget >/dev/null 2>&1; then
+            wget -qO /tmp/flake.nix "$SITE_URL/flake.nix" 2>/dev/null && FLAKE_REF="/tmp#cool-terminal" && FLAKE_DIR="/tmp"
+        elif command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$SITE_URL/flake.nix" -o /tmp/flake.nix 2>/dev/null && FLAKE_REF="/tmp#cool-terminal" && FLAKE_DIR="/tmp"
+        else
+            echo "ERROR: Need wget or curl to download flake.nix"
+            exit 1
+        fi
+    fi
+    
+    echo ""
+    echo "Building cool terminal package..."
+    
+    # Build the package and create symlinks
+    if nix build "$FLAKE_REF" --out-link /tmp/cool-terminal-result 2>/dev/null; then
+        echo "✓ Package built successfully"
+        
+        COOL_TERMINAL_PATH="/tmp/cool-terminal-result"
+        if [ -d "$COOL_TERMINAL_PATH/bin" ]; then
+            echo "Installing tools globally..."
+            
+            # Create symlinks in /usr/local/bin (requires root)
+            if [ "$(id -u)" = "0" ]; then
+                INSTALLED_COUNT=0
+                if ls "$COOL_TERMINAL_PATH/bin"/* >/dev/null 2>&1; then
+                    for tool in "$COOL_TERMINAL_PATH/bin"/*; do
+                        if [ -f "$tool" ] && [ -x "$tool" ]; then
+                            TOOL_NAME=$(basename "$tool")
+                            if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
+                                ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
+                                INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+                            fi
+                        fi
+                    done
+                fi
+                
+                if [ "$INSTALLED_COUNT" -gt 0 ]; then
+                    echo "✓ Installed $INSTALLED_COUNT cool terminal tools to /usr/local/bin (system-wide)"
+                else
+                    echo "✓ Cool terminal tools already installed in /usr/local/bin"
+                fi
+            else
+                # For non-root users, install via nix profile
+                echo "Installing to user profile (nix profile)..."
+                if nix profile install "$FLAKE_REF" 2>/dev/null; then
+                    echo "✓ Tools installed to user profile"
+                    echo "  Tools are available via Nix profile PATH"
+                else
+                    echo "WARNING: nix profile installation failed"
+                    echo "Consider running with: doas just install-cool-terminal-global"
+                fi
+            fi
+        else
+            echo "WARNING: Built package doesn't have bin directory"
+        fi
+        
+        # Cleanup
+        rm -rf /tmp/cool-terminal-result 2>/dev/null || true
+    else
+        echo "WARNING: Failed to build package, falling back to nix profile installation..."
+        
+        # Fallback: Use standard nix profile install
+        if nix profile install "$FLAKE_REF" 2>/dev/null; then
+            echo "✓ Installed tools via nix profile"
+            if [ "$(id -u)" = "0" ]; then
+                echo "  Note: For system-wide installation, tools should be in Nix profile PATH"
+                echo "  To make tools available in /usr/local/bin, run this command again after build succeeds"
+            fi
+        else
+            echo "ERROR: Failed to install tools"
+            exit 1
+        fi
+    fi
+    
+    echo ""
+    echo "=========================================="
+    echo "Cool terminal installation completed!"
+    echo "=========================================="
+    echo ""
+    echo "Installed tools:"
+    echo "  - starship: Modern prompt"
+    echo "  - bat: Better cat with syntax highlighting"
+    echo "  - exa: Modern ls replacement"
+    echo "  - fd: Fast find replacement"
+    echo "  - ripgrep (rg): Fast grep replacement"
+    echo "  - fzf: Fuzzy finder"
+    echo "  - tmux: Terminal multiplexer"
+    echo "  - zsh: Better shell"
+    echo ""
+    echo "Restart your shell or run:"
+    echo "  source /etc/profile.d/theblackberets-bashrc.sh"
+    echo ""
+    echo "To use zsh:"
+    echo "  zsh"
+    echo "  # Or set as default: chsh -s $(which zsh)"
+
 # Update all packages from flake.nix (applies latest flake.nix changes)
 update-from-flake:
     #!/usr/bin/env bash

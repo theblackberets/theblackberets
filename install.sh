@@ -1189,6 +1189,467 @@ log "  ✓ LOCAL_AI command created at $LOCAL_AI_WRAPPER"
 log "  Usage: LOCAL_AI [PORT] [MODEL_DIR] [CONFIG_DIR]"
 log ""
 
+# Install Kali tools globally (NixOS-style) by default
+log "  -> Installing Kali tools globally (NixOS-style)..."
+if command_exists nix && command_exists just; then
+    # Enable Nix commands
+    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+    elif [ -f /etc/profile.d/nix.sh ]; then
+        . /etc/profile.d/nix.sh 2>/dev/null || true
+    fi
+    
+    # Enable flakes if needed
+    if ! nix show-config 2>/dev/null | grep -q "experimental-features.*flakes"; then
+        mkdir -p /etc/nix
+        echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf 2>/dev/null || true
+    fi
+    
+    # Determine flake location
+    FLAKE_DIR=""
+    FLAKE_REF=""
+    if [ -f "flake.nix" ]; then
+        FLAKE_DIR="."
+        FLAKE_REF=".#kali-tools"
+        log "  -> Using local flake.nix"
+    elif [ -f "$(dirname "$DEFAULT_JUSTFILE")/flake.nix" ]; then
+        FLAKE_DIR="$(dirname "$DEFAULT_JUSTFILE")"
+        FLAKE_REF="$FLAKE_DIR#kali-tools"
+        log "  -> Using flake.nix from default justfile directory"
+    else
+        # Try to download flake.nix
+        SITE_URL="https://theblackberets.github.io"
+        TEMP_FLAKE="/tmp/flake.nix"
+        TEMP_FILES+=("$TEMP_FLAKE")
+        if command -v wget >/dev/null 2>&1; then
+            if wget -qO "$TEMP_FLAKE" "$SITE_URL/flake.nix" 2>/dev/null; then
+                FLAKE_REF="/tmp#kali-tools"
+                FLAKE_DIR="/tmp"
+                log "  -> Downloaded flake.nix from $SITE_URL"
+            fi
+        elif command -v curl >/dev/null 2>&1; then
+            if curl -fsSL "$SITE_URL/flake.nix" -o "$TEMP_FLAKE" 2>/dev/null; then
+                FLAKE_REF="/tmp#kali-tools"
+                FLAKE_DIR="/tmp"
+                log "  -> Downloaded flake.nix from $SITE_URL"
+            fi
+        fi
+    fi
+    
+    if [ -n "$FLAKE_REF" ] && [ -n "$FLAKE_DIR" ]; then
+        # Build the package and create symlinks in /usr/local/bin
+        TEMP_BUILD_RESULT="/tmp/kali-tools-result"
+        TEMP_FILES+=("$TEMP_BUILD_RESULT")
+        
+        if nix_with_timeout 300 nix build "$FLAKE_REF" --out-link "$TEMP_BUILD_RESULT" 2>/dev/null; then
+            log "  ✓ Kali tools package built successfully"
+            
+            if [ -d "$TEMP_BUILD_RESULT/bin" ]; then
+                INSTALLED_COUNT=0
+                # Handle case where bin directory exists but might be empty
+                if ls "$TEMP_BUILD_RESULT/bin"/* >/dev/null 2>&1; then
+                    for tool in "$TEMP_BUILD_RESULT/bin"/*; do
+                        if [ -f "$tool" ] && [ -x "$tool" ]; then
+                            TOOL_NAME=$(basename "$tool")
+                            if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
+                                ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
+                                INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+                            fi
+                        fi
+                    done
+                fi
+                
+                if [ "$INSTALLED_COUNT" -gt 0 ]; then
+                    log "  ✓ Installed $INSTALLED_COUNT Kali tools to /usr/local/bin (system-wide)"
+                else
+                    log "  ✓ Kali tools already installed in /usr/local/bin"
+                fi
+            else
+                log_warning "Built package doesn't have bin directory, skipping symlink creation"
+            fi
+        else
+            log_warning "Failed to build kali-tools package, skipping global installation"
+            log "  You can install tools later with: just install-kali-tools-global"
+        fi
+    else
+        log_warning "Could not find or download flake.nix, skipping global installation"
+        log "  You can install tools later with: just install-kali-tools-global"
+    fi
+else
+    log_warning "Nix or just not available, skipping Kali tools installation"
+    log "  You can install tools later with: just install-kali-tools-global"
+fi
+
+log ""
+
+# Install cool terminal tools globally (NixOS-style) by default
+log "  -> Installing cool terminal tools globally (NixOS-style)..."
+if command_exists nix && command_exists just; then
+    # Enable Nix commands
+    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+    elif [ -f /etc/profile.d/nix.sh ]; then
+        . /etc/profile.d/nix.sh 2>/dev/null || true
+    fi
+    
+    # Enable flakes if needed
+    if ! nix show-config 2>/dev/null | grep -q "experimental-features.*flakes"; then
+        mkdir -p /etc/nix
+        echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf 2>/dev/null || true
+    fi
+    
+    # Determine flake location
+    FLAKE_DIR=""
+    FLAKE_REF=""
+    if [ -f "flake.nix" ]; then
+        FLAKE_DIR="."
+        FLAKE_REF=".#cool-terminal"
+        log "  -> Using local flake.nix"
+    elif [ -f "$(dirname "$DEFAULT_JUSTFILE")/flake.nix" ]; then
+        FLAKE_DIR="$(dirname "$DEFAULT_JUSTFILE")"
+        FLAKE_REF="$FLAKE_DIR#cool-terminal"
+        log "  -> Using flake.nix from default justfile directory"
+    else
+        # Try to download flake.nix
+        SITE_URL="https://theblackberets.github.io"
+        TEMP_FLAKE="/tmp/flake-terminal.nix"
+        TEMP_FILES+=("$TEMP_FLAKE")
+        if command -v wget >/dev/null 2>&1; then
+            if wget -qO "$TEMP_FLAKE" "$SITE_URL/flake.nix" 2>/dev/null; then
+                FLAKE_REF="/tmp#cool-terminal"
+                FLAKE_DIR="/tmp"
+                log "  -> Downloaded flake.nix from $SITE_URL"
+            fi
+        elif command -v curl >/dev/null 2>&1; then
+            if curl -fsSL "$SITE_URL/flake.nix" -o "$TEMP_FLAKE" 2>/dev/null; then
+                FLAKE_REF="/tmp#cool-terminal"
+                FLAKE_DIR="/tmp"
+                log "  -> Downloaded flake.nix from $SITE_URL"
+            fi
+        fi
+    fi
+    
+    if [ -n "$FLAKE_REF" ] && [ -n "$FLAKE_DIR" ]; then
+        # Build the package and create symlinks in /usr/local/bin
+        TEMP_BUILD_RESULT="/tmp/cool-terminal-result"
+        TEMP_FILES+=("$TEMP_BUILD_RESULT")
+        
+        if nix_with_timeout 300 nix build "$FLAKE_REF" --out-link "$TEMP_BUILD_RESULT" 2>/dev/null; then
+            log "  ✓ Cool terminal package built successfully"
+            
+            if [ -d "$TEMP_BUILD_RESULT/bin" ]; then
+                INSTALLED_COUNT=0
+                # Handle case where bin directory exists but might be empty
+                if ls "$TEMP_BUILD_RESULT/bin"/* >/dev/null 2>&1; then
+                    for tool in "$TEMP_BUILD_RESULT/bin"/*; do
+                        if [ -f "$tool" ] && [ -x "$tool" ]; then
+                            TOOL_NAME=$(basename "$tool")
+                            if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
+                                ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
+                                INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+                            fi
+                        fi
+                    done
+                fi
+                
+                if [ "$INSTALLED_COUNT" -gt 0 ]; then
+                    log "  ✓ Installed $INSTALLED_COUNT cool terminal tools to /usr/local/bin (system-wide)"
+                else
+                    log "  ✓ Cool terminal tools already installed in /usr/local/bin"
+                fi
+            else
+                log_warning "Built package doesn't have bin directory, skipping symlink creation"
+            fi
+        else
+            log_warning "Failed to build cool-terminal package, skipping global installation"
+            log "  You can install tools later with: just install-cool-terminal-global"
+        fi
+    else
+        log_warning "Could not find or download flake.nix, skipping cool terminal installation"
+        log "  You can install tools later with: just install-cool-terminal-global"
+    fi
+else
+    log_warning "Nix or just not available, skipping cool terminal installation"
+    log "  You can install tools later with: just install-cool-terminal-global"
+fi
+
+log ""
+
+# Configure Starship prompt
+log "  -> Configuring Starship prompt..."
+STARSHIP_CONFIG_DIR="/etc/starship"
+STARSHIP_CONFIG="$STARSHIP_CONFIG_DIR/config.toml"
+mkdir -p "$STARSHIP_CONFIG_DIR"
+
+if command -v starship >/dev/null 2>&1 || [ -f /usr/local/bin/starship ]; then
+    # Create a cool Starship config
+    cat > "$STARSHIP_CONFIG" << 'STARSHIPEOF'
+# Starship prompt configuration for The Black Berets
+# Modern, fast, and feature-rich prompt
+
+format = """
+[╭─](bold green)$os\
+$username\
+$hostname\
+$localip\
+$shlvl\
+$directory\
+$git_branch\
+$git_commit\
+$git_state\
+$git_metrics\
+$git_status\
+$docker_context\
+$package\
+$c\
+$cmake\
+$golang\
+$java\
+$nodejs\
+$python\
+$rust\
+$terraform\
+$vagrant\
+$nix_shell\
+$conda\
+$memory_usage\
+$aws\
+$gcloud\
+$env_var\
+$custom\
+$sudo\
+$cmd_duration\
+$line_break\
+[╰─](bold green)$character"""
+
+# Username
+[username]
+style_user = "bold yellow"
+style_root = "bold red"
+format = "[$user]($style) "
+disabled = false
+show_always = true
+
+# Hostname
+[hostname]
+ssh_only = false
+format = "on [$hostname](bold blue) "
+trim_at = "."
+
+# Directory
+[directory]
+truncation_length = 3
+truncate_to_repo = true
+format = "at [$path]($style)[$read_only]($read_only_style) "
+style = "bold cyan"
+
+# Git
+[git_branch]
+format = "on [$symbol$branch(:$remote_branch)]($style) "
+symbol = " "
+style = "bold purple"
+
+[git_status]
+format = "([\[$all_status$ahead_behind\]]($style) )"
+style = "bold red"
+
+# Command duration
+[cmd_duration]
+min_time = 2_000
+format = "took [$duration]($style) "
+style = "bold yellow"
+
+# Python
+[python]
+format = "via [🐍 $version](bold yellow) "
+
+# Rust
+[rust]
+format = "via [🦀 $version](bold red) "
+
+# Node
+[nodejs]
+format = "via [⬢ $version](bold green) "
+
+# Package
+[package]
+format = "is [$symbol$version]($style) "
+symbol = "📦 "
+style = "bold 208"
+
+# Nix shell
+[nix_shell]
+format = "via [❄️ $name](bold blue) "
+impure_msg = "impure"
+pure_msg = "pure"
+
+# Memory
+[memory_usage]
+format = "via $symbol[$ram( | $swap)]($style) "
+threshold = 75
+symbol = " "
+style = "bold dimmed white"
+
+# Character
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[✗](bold red)"
+vim_symbol = "[V](bold green)"
+STARSHIPEOF
+    
+    log "  ✓ Starship configuration created at $STARSHIP_CONFIG"
+    
+    # Add Starship init to bashrc config
+    if [ -f "$BASHRC_CONFIG" ]; then
+        if ! grep -q "starship init" "$BASHRC_CONFIG" 2>/dev/null; then
+            cat >> "$BASHRC_CONFIG" << 'STARSHIPINITEOF'
+
+# Initialize Starship prompt (if available)
+if command -v starship >/dev/null 2>&1; then
+    eval "$(starship init bash)"
+fi
+STARSHIPINITEOF
+            log "  ✓ Starship initialization added to bashrc"
+        fi
+    fi
+else
+    log_warning "Starship not found, skipping configuration"
+fi
+
+# Configure zsh (if installed)
+log "  -> Configuring zsh..."
+if command -v zsh >/dev/null 2>&1 || [ -f /usr/local/bin/zsh ]; then
+    ZSH_CONFIG_DIR="/etc/zsh"
+    mkdir -p "$ZSH_CONFIG_DIR"
+    
+    # Create zshrc configuration
+    cat > "$ZSH_CONFIG_DIR/zshrc" << 'ZSHRCEOF'
+# The Black Berets - Zsh configuration
+
+# Enable colors
+autoload -U colors && colors
+
+# History configuration
+HISTFILE=~/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_REDUCE_BLANKS
+setopt HIST_IGNORE_SPACE
+
+# Better completion
+autoload -U compinit
+compinit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+
+# Useful aliases
+alias ls='exa --icons --color=always'
+alias ll='exa -l --icons --color=always'
+alias la='exa -la --icons --color=always'
+alias cat='bat --style=auto'
+alias grep='rg'
+alias find='fd'
+alias top='htop'
+alias vim='nvim' 2>/dev/null || alias vim='vim'
+
+# Source syntax highlighting (if installed)
+if [ -f /usr/local/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
+    source /usr/local/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null
+elif [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
+    source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null
+else
+    # Try to find in Nix store
+    NIX_HIGHLIGHT=$(find /nix/store -name "zsh-syntax-highlighting.zsh" 2>/dev/null | head -n1)
+    if [ -n "$NIX_HIGHLIGHT" ] && [ -f "$NIX_HIGHLIGHT" ]; then
+        source "$NIX_HIGHLIGHT" 2>/dev/null
+    fi
+fi
+
+# Source autosuggestions (if installed)
+if [ -f /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]; then
+    source /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh 2>/dev/null
+elif [ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]; then
+    source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh 2>/dev/null
+else
+    # Try to find in Nix store
+    NIX_AUTOSUGGEST=$(find /nix/store -name "zsh-autosuggestions.zsh" 2>/dev/null | head -n1)
+    if [ -n "$NIX_AUTOSUGGEST" ] && [ -f "$NIX_AUTOSUGGEST" ]; then
+        source "$NIX_AUTOSUGGEST" 2>/dev/null
+    fi
+fi
+
+# Initialize Starship prompt (if available)
+if command -v starship >/dev/null 2>&1; then
+    eval "$(starship init zsh)"
+fi
+
+# fzf integration (if available)
+if command -v fzf >/dev/null 2>&1; then
+    [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh 2>/dev/null || true
+fi
+ZSHRCEOF
+    
+    log "  ✓ Zsh configuration created at $ZSH_CONFIG_DIR/zshrc"
+    
+    # Set zsh as default shell for root (if running as root)
+    if [ "$(id -u)" = "0" ]; then
+        if command -v zsh >/dev/null 2>&1; then
+            ZSH_PATH=$(command -v zsh)
+            if [ "$SHELL" != "$ZSH_PATH" ]; then
+                if command -v chsh >/dev/null 2>&1; then
+                    chsh -s "$ZSH_PATH" root 2>/dev/null || true
+                fi
+            fi
+        fi
+    fi
+else
+    log_warning "Zsh not found, skipping configuration"
+fi
+
+# Add useful aliases to bashrc
+log "  -> Adding modern CLI aliases..."
+if [ -f "$BASHRC_CONFIG" ]; then
+    if ! grep -q "# Modern CLI aliases" "$BASHRC_CONFIG" 2>/dev/null; then
+        cat >> "$BASHRC_CONFIG" << 'ALIASESEOF'
+
+# Modern CLI aliases (The Black Berets)
+# Use modern replacements if available
+if command -v exa >/dev/null 2>&1; then
+    alias ls='exa --icons --color=always'
+    alias ll='exa -l --icons --color=always'
+    alias la='exa -la --icons --color=always'
+fi
+
+if command -v bat >/dev/null 2>&1; then
+    alias cat='bat --style=auto'
+fi
+
+if command -v ripgrep >/dev/null 2>&1 || command -v rg >/dev/null 2>&1; then
+    alias grep='rg'
+fi
+
+if command -v fd >/dev/null 2>&1; then
+    alias find='fd'
+fi
+
+if command -v htop >/dev/null 2>&1; then
+    alias top='htop'
+fi
+
+# fzf integration
+if command -v fzf >/dev/null 2>&1; then
+    [ -f ~/.fzf.bash ] && source ~/.fzf.bash 2>/dev/null || true
+fi
+ALIASESEOF
+        log "  ✓ Modern CLI aliases added to bashrc"
+    fi
+fi
+
+log ""
+
 # Final verification
 log "=========================================="
 log "Installation Summary & Verification"
@@ -1241,6 +1702,72 @@ if command_exists just; then
 else
     log_error "✗ just: Not found"
     VERIFICATION_FAILED=true
+fi
+
+# Verify Kali tools installation
+KALI_TOOLS_INSTALLED=false
+if command -v nmap >/dev/null 2>&1; then
+    if [ -L /usr/local/bin/nmap ] || [ -f /usr/local/bin/nmap ]; then
+        KALI_TOOLS_INSTALLED=true
+        log "✓ Kali tools: Installed globally in /usr/local/bin"
+        # Check a few key tools
+        TOOLS_FOUND=0
+        for tool in nmap sqlmap john hashcat aircrack-ng; do
+            if command -v "$tool" >/dev/null 2>&1; then
+                TOOLS_FOUND=$((TOOLS_FOUND + 1))
+            fi
+        done
+        if [ "$TOOLS_FOUND" -gt 0 ]; then
+            log "  Found $TOOLS_FOUND key tools available"
+        fi
+    elif command_exists nix; then
+        # Check if tools are available via Nix profile
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+        fi
+        if command -v nmap >/dev/null 2>&1; then
+            log "✓ Kali tools: Available via Nix profile"
+            KALI_TOOLS_INSTALLED=true
+        fi
+    fi
+fi
+
+if [ "$KALI_TOOLS_INSTALLED" = false ]; then
+    log_warning "Kali tools: Not installed globally"
+    log "  Install with: just install-kali-tools-global"
+fi
+
+# Verify cool terminal tools installation
+COOL_TERMINAL_INSTALLED=false
+if command -v starship >/dev/null 2>&1; then
+    if [ -L /usr/local/bin/starship ] || [ -f /usr/local/bin/starship ]; then
+        COOL_TERMINAL_INSTALLED=true
+        log "✓ Cool terminal tools: Installed globally in /usr/local/bin"
+        # Check a few key tools
+        TOOLS_FOUND=0
+        for tool in starship bat exa fd rg fzf tmux zsh; do
+            if command -v "$tool" >/dev/null 2>&1; then
+                TOOLS_FOUND=$((TOOLS_FOUND + 1))
+            fi
+        done
+        if [ "$TOOLS_FOUND" -gt 0 ]; then
+            log "  Found $TOOLS_FOUND cool terminal tools available"
+        fi
+    elif command_exists nix; then
+        # Check if tools are available via Nix profile
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+        fi
+        if command -v starship >/dev/null 2>&1; then
+            log "✓ Cool terminal tools: Available via Nix profile"
+            COOL_TERMINAL_INSTALLED=true
+        fi
+    fi
+fi
+
+if [ "$COOL_TERMINAL_INSTALLED" = false ]; then
+    log_warning "Cool terminal tools: Not installed globally"
+    log "  Install with: just install-cool-terminal-global"
 fi
 
 DEFAULT_JUSTFILE="/usr/local/share/theblackberets/justfile"

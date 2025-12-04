@@ -57,6 +57,38 @@
             ];
           };
           
+          # Cool terminal tools (modern CLI replacements and enhancements)
+          cool-terminal = pkgs.buildEnv {
+            name = "cool-terminal";
+            paths = with pkgs; [
+              # Modern prompt (works with bash, zsh, fish)
+              starship
+              
+              # Modern CLI replacements
+              bat          # cat replacement with syntax highlighting
+              exa          # ls replacement (modern, colorful)
+              fd           # find replacement (faster)
+              ripgrep      # grep replacement (rg)
+              fzf          # fuzzy finder
+              
+              # Terminal multiplexer
+              tmux
+              
+              # Better shell
+              zsh
+              zsh-syntax-highlighting
+              zsh-autosuggestions
+              
+              # Additional useful tools
+              htop         # better top
+              neofetch     # system info
+              git          # version control
+              tree         # directory tree
+              jq           # JSON processor
+              yq           # YAML processor
+            ];
+          };
+          
           # Full Kali tools (optional, install separately if needed)
           kali-tools-full = pkgs.buildEnv {
             name = "kali-tools-full";
